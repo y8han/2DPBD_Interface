@@ -12,7 +12,7 @@ dt = 1e-2#simulation time step(important) -> adjustable
 dt_inv = 1 / dt
 dx = 0.02
 dim = 2
-pbd_num_iters = 30#Iteration number(important) -> adjustable
+pbd_num_iters =30#Iteration number(important) -> adjustable
 
 scalar = lambda: ti.var(dt=real) #2D dense tensor
 vec = lambda: ti.Vector(dim, dt=real) #2*1 vector(each element in a tensor)
@@ -26,6 +26,9 @@ particle_mass = 1 #mi
 particle_mass_inv = 1 / particle_mass # 1 / mi
 particle_mass_invv = 1 / (particle_mass_inv + particle_mass_inv + lambda_epsilon)
 maximum_constraints = 50
+
+Delta_x_sequence = scalar()
+Delta_y_sequence = scalar()
 
 bottom_y = 0.02
 bottom_x = 0.98
@@ -48,7 +51,7 @@ previous_minimum_distance = -10000
 @ti.layout  #Environment layout(placed in ti.layout) initialization of the dimensiond of each tensor variables(global)
 def place():
     ti.root.dense(ti.ij, (max_num_particles, max_num_particles)).place(rest_length)
-    ti.root.dense(ti.i, max_num_particles).place(x, v, old_x, actuation_type, position_delta_tmp, position_delta_sum) #initialzation to zero
+    ti.root.dense(ti.i, max_num_particles).place(x, v, old_x, actuation_type, position_delta_tmp, position_delta_sum, Delta_x_sequence, Delta_y_sequence) #initialzation to zero
     nb_node = ti.root.dense(ti.i, max_num_particles)
     nb_node.place(constraint_num_neighbors)
     nb_node.dense(ti.j, maximum_constraints).place(constraint_neighbors)
@@ -76,10 +79,11 @@ def substep(n: ti.i32): # Compute force and new velocity
     for i in range(n):
         v[i] *= ti.exp(-dt * damping[None]) # damping
         total_force = ti.Vector(gravity) * particle_mass #gravity -> accelaration
-        if actuation_type[i] == 1:
-            total_force = ti.Vector(H_force) * particle_mass
-        #if actuation_type[i] == 2: #control points by the stick
-
+        # if actuation_type[i] == 1:
+        #     total_force = ti.Vector(H_force) * particle_mass
+        if actuation_type[i] == 2: #control points by the stick
+            x[i].x += Delta_x_sequence[i]
+            x[i].y += Delta_y_sequence[i]
         v[i] += dt * total_force / particle_mass
 
 @ti.kernel
@@ -101,7 +105,8 @@ def collision_check(n: ti.i32):# Collide with ground
 @ti.kernel
 def Position_update(n: ti.i32):# Compute new position
     for i in range(n):
-        x[i] += v[i] * dt
+        if actuation_type[i] == 1:
+            x[i] += v[i] * dt
 
 @ti.kernel
 def stretch_constraint(n: ti.i32):
@@ -121,7 +126,8 @@ def stretch_constraint(n: ti.i32):
 @ti.kernel
 def apply_position_deltas(n: ti.i32):
     for i in range(n):
-        x[i] += position_delta_tmp[i]
+        if actuation_type[i] == 1:
+            x[i] += position_delta_tmp[i]
 
 @ti.kernel
 def updata_velosity(n: ti.i32): #updata velosity after combining constraints
@@ -226,8 +232,9 @@ def CheckCollison(rotate_direction, verts, tris, stick, rota_degree, trans_x, tr
             collision = 1
         # if nearest_point in verts:
         #     print("nearest point of the stick:", nearest_point_stick)
+    tmp = previous_minimum_distance
     previous_minimum_distance = minimum_distance
-    return nearest_point, collision
+    return nearest_point, collision, minimum_distance
     #print(ddata.result.pos)
     # if cdata.result.is_collision:
     #     for contact in cdata.result.contacts:
@@ -273,7 +280,10 @@ def stick_configuration(rota_degree, trans_x, trans_y, length, width, top_left, 
     bottom_right_trans = bottom_right_trans[:2]
     return transform_matrix, [top_left_trans, top_right_trans, bottom_right_trans, bottom_left_trans], stick
 
-def compute_direction(transform_matrix, length, width, nearest_point):
+def compute_distance(p1, p2):
+    return np.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
+
+def compute_direction(rotate_direction, transform_matrix, length, width, nearest_point):
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
@@ -284,18 +294,27 @@ def compute_direction(transform_matrix, length, width, nearest_point):
     bottom_right_homo = np.r_[bottom_right,np.array([1,])]
     top_left_trans = transform_matrix @ top_left_homo
     top_left_trans = top_left_trans[:2]
-    
-    distance(top_left_trans, nearest_point)
-
+    top_left = compute_distance(top_left_trans, nearest_point)
     top_right_trans = transform_matrix @ top_right_homo
     top_right_trans = top_right_trans[:2]
-    distance(top_right_trans, nearest_point)
+    top_right = compute_distance(top_right_trans, nearest_point)
     bottom_left_trans = transform_matrix @ bottom_left_homo
     bottom_left_trans = bottom_left_trans[:2]
-    distance(bottom_left_trans, nearest_point)
+    bottom_left = compute_distance(bottom_left_trans, nearest_point)
     bottom_right_trans = transform_matrix @ bottom_right_homo
     bottom_right_trans = bottom_right_trans[:2]
-    distance(bottom_right_trans, nearest_point)
+    bottom_right = compute_distance(bottom_right_trans, nearest_point)
+    if top_right < top_left:
+        if rotate_direction == 'clock-wise':
+            direction = bottom_right_trans - top_right_trans
+        elif rotate_direction == 'counter-clock-wise':
+            direction = top_right_trans- bottom_right_trans
+    else:
+        if rotate_direction == 'clock-wise':
+            direction = top_left_trans - bottom_left_trans
+        elif rotate_direction == 'counter-clock-wise':
+            direction = bottom_left_trans- top_left_trans
+    return direction
 
 def main():
     #Read all mesh points from txt.file
@@ -330,15 +349,18 @@ def main():
     tri_mesh = np.array(tri_mesh)
     single_particle_list = check_single_particle()
     index = 0
-    omega = 0.5
+    omega = 1
     tolerance = 0.02
+    scale = 1
     length = 0.5
     width = 0.02
+    trans_x = 0.8
+    trans_y = 0.4
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
     bottom_right = np.array([length / 2, -width / 2, 0])
-    rotate_direction = 'counter-clock-wise'
+    rotate_direction = 'counter-clock-wise' #or 'clock-wise'
     while True:
         for e in gui.get_events(ti.GUI.PRESS):
             if e.key in [ti.GUI.ESCAPE, ti.GUI.EXIT]:
@@ -347,7 +369,6 @@ def main():
                 paused[None] = not paused[None]
             elif e.key == ti.GUI.LMB:
                 print(e.pos[0], e.pos[1])
-
         collision = -10
         if not paused[None]:
             index += 1
@@ -356,30 +377,40 @@ def main():
                 X = x.to_numpy()[:n]
                 verts = np.c_[X,np.zeros(n)]
                 if rotate_direction == 'counter-clock-wise':
-                    angle = 45 + omega*index
+                    angle = 125 + omega*index
                 else:
-                    angle = 45 - omega*index
-                transform_matrix, stick_corners, stick = stick_configuration(angle, 0.3, 0.3, length, width, top_left, top_right, bottom_left, bottom_right)
-                nearest_point, collision = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, 0.3, 0.3, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
-
+                    angle = 125 - omega*index
+                transform_matrix, stick_corners, stick = stick_configuration(angle, trans_x, trans_y, length, width, top_left, top_right, bottom_left, bottom_right)
+                nearest_point, collision, delta = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, trans_x, trans_y, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
         gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
         gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
         gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
         gui.line(begin=stick_corners[3],end=stick_corners[0],color=0x0, radius=1)
         actuation_type_tmp = np.ones((max_num_particles,),dtype=float)
+        Delta_x_se = np.zeros((max_num_particles,),dtype=float)
+        Delta_y_se = np.zeros((max_num_particles,),dtype=float)
         for i in range(n):
             if i not in single_particle_list:
                 if collision == 1:
                     if X[i:i+1][0][0] == nearest_point[0]: #control point
                         actuation_type_tmp[i] = 2
-                        compute_direction(transform_matrix, length, width, nearest_point)
+                        direction = compute_direction(rotate_direction, transform_matrix, length, width, nearest_point)
+                        #print("Direction:", direction) #force direction
+                        #print("Distance:", delta) #move distance
+                        delta_x = scale * delta * direction[0] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
+                        delta_y = scale * delta * direction[1] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
+                        Delta_x_se[i] = delta_x
+                        Delta_y_se[i] = delta_y
+                        print("Delta_x", delta_x)
+                        print("Delta_y", delta_y)
                         gui.circles(X[i:i+1], color=0xffaa77, radius=12)
                     else:
                         gui.circles(X[i:i+1], color=0xffaa77, radius=5)
                 else:
                     gui.circles(X[i:i+1], color=0xffaa77, radius=5)
         actuation_type.from_numpy(actuation_type_tmp)
-
+        Delta_x_sequence.from_numpy(Delta_x_se)
+        Delta_y_sequence.from_numpy(Delta_y_se)
         gui.line(begin=(0.0, bottom_y), end=(1.0, bottom_y), color=0x0, radius=1)
         for i in range(num_particles[None]):
             for j in range(i + 1, num_particles[None]):
@@ -391,3 +422,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
