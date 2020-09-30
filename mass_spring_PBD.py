@@ -354,8 +354,8 @@ def main():
     scale = 1
     length = 0.5
     width = 0.02
-    trans_x = 0.8
-    trans_y = 0.4
+    trans_x = 0.3
+    trans_y = 0.3
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
