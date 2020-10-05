@@ -81,7 +81,7 @@ def substep(n: ti.i32): # Compute force and new velocity
         total_force = ti.Vector(gravity) * particle_mass #gravity -> accelaration
         # if actuation_type[i] == 1:
         #     total_force = ti.Vector(H_force) * particle_mass
-        if actuation_type[i] == 2: #control points by the stick
+        if actuation_type[i] == 2: #control points by the cylinder
             x[i].x += Delta_x_sequence[i]
             x[i].y += Delta_y_sequence[i]
         v[i] += dt * total_force / particle_mass
@@ -283,6 +283,18 @@ def stick_configuration(rota_degree, trans_x, trans_y, length, width, top_left, 
 def compute_distance(p1, p2):
     return np.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
 
+def Set_EndEffector(length):  #Adjust the position and angle of the end Effector
+    p1 = float(input("position_x:"))
+    p2 = float(input("position_y:"))
+    angle = float(input("angle:"))
+    p2 = p2 - length / 2 * np.sin(angle/180*np.pi)
+    p1 = p1 - length / 2 * np.cos(angle/180*np.pi)
+    return p1,p2,angle,1
+
+def Set_Module():
+    index = int(input("Module index:"))
+    return index
+
 def compute_direction(rotate_direction, transform_matrix, length, width, nearest_point):
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
@@ -349,37 +361,67 @@ def main():
     tri_mesh = np.array(tri_mesh)
     single_particle_list = check_single_particle()
     index = 0
-    omega = 1
+    omega = 0
+    initial_angle = 125
     tolerance = 0.02
     scale = 1
     length = 0.5
     width = 0.02
     trans_x = 0.3
     trans_y = 0.3
+    refresh_EndEffector = 0
+    refresh_CenterObstacle = 0
+    tmp_trans_x = -1
+    tmp_trans_y = -1
+    tmp_initial_angle = -1
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
     bottom_right = np.array([length / 2, -width / 2, 0])
     rotate_direction = 'counter-clock-wise' #or 'clock-wise'
+    Module = {'EndEffector':0, 'Extension':1 ,'Obstacles':2, 'stiffness':3, 'LidarSwitch':4, 'LidarMaxDistance':5,'BoundaryPoints:':6} #Mode
     while True:
         for e in gui.get_events(ti.GUI.PRESS):
             if e.key in [ti.GUI.ESCAPE, ti.GUI.EXIT]:
                 exit()
             elif e.key == gui.SPACE:
                 paused[None] = not paused[None]
-            elif e.key == ti.GUI.LMB:
-                print(e.pos[0], e.pos[1])
+                Module_index = Set_Module()
+                if(Module_index == Module['EndEffector']):
+                    print("Set End Effector")
+                    if refresh_EndEffector == 0:
+                        tmp_trans_x, tmp_trans_y, tmp_initial_angle, refresh_EndEffector = Set_EndEffector(length)
+                if(Module_index == Module['EndEffector']):
+                    print("Set Extension")
+                if(Module_index == Module['Obstacles']):
+                    print("Set center point")
+                    if 
+                if(Module_index == Module['stiffness']):
+                    print("Set stiffness")
+                if(Module_index == Module['LidarSwitch']):
+                    print("Lidar Switch on")
+                if(Module_index == Module['LidarMaxDistance']):
+                    print("Set Lidar max distance")
+                if(Module_index == Module['BoundaryPoints:']):
+                    print("Return boundary")
+            # elif e.key == ti.GUI.LMB:
+            #     print(e.pos[0], e.pos[1])
         collision = -10
         if not paused[None]:
+            if refresh_EndEffector == 1:
+                trans_x=tmp_trans_x
+                trans_y=tmp_trans_y
+                initial_angle=tmp_initial_angle
+                refresh_EndEffector=0
             index += 1
             for step in range(1):
                 forward(n)
                 X = x.to_numpy()[:n]
-                verts = np.c_[X,np.zeros(n)]
+                verts = np.c_[X,np.zeros(n)]#fcl -> 3_D field
                 if rotate_direction == 'counter-clock-wise':
-                    angle = 125 + omega*index
+                    angle = initial_angle + omega*index
                 else:
-                    angle = 125 - omega*index
+                    angle = initial_angle - omega*index
                 transform_matrix, stick_corners, stick = stick_configuration(angle, trans_x, trans_y, length, width, top_left, top_right, bottom_left, bottom_right)
                 nearest_point, collision, delta = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, trans_x, trans_y, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
         gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
@@ -391,7 +433,7 @@ def main():
         Delta_y_se = np.zeros((max_num_particles,),dtype=float)
         for i in range(n):
             if i not in single_particle_list:
-                if collision == 1:
+                if collision == 1:  #interaction of the cylinder and mass
                     if X[i:i+1][0][0] == nearest_point[0]: #control point
                         actuation_type_tmp[i] = 2
                         direction = compute_direction(rotate_direction, transform_matrix, length, width, nearest_point)
