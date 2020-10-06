@@ -2,6 +2,7 @@ import taichi as ti
 import math as math
 import fcl
 import numpy as np
+import time
 
 ti.init(debug=False,arch=ti.cpu)
 real = ti.f32 #data type f32 -> float in C
@@ -21,6 +22,8 @@ mat = lambda: ti.Matrix(dim, dim, dt=real) #2*2 matrix(each element in a tensor)
 num_particles = ti.var(ti.i32, shape=())
 paused = ti.var(ti.i32, shape=())
 damping = ti.var(ti.f32, shape=())
+stiffness = ti.var(ti.f32, shape=())
+LidarMaxDistance = ti.var(ti.f32, shape=())
 
 particle_mass = 1 #mi
 particle_mass_inv = 1 / particle_mass # 1 / mi
@@ -119,7 +122,7 @@ def stretch_constraint(n: ti.i32):
             x_ij = pos_i - pos_j
             dist_diff = x_ij.norm() - rest_length[i, p_j]
             grad = x_ij.normalized()
-            position_delta = -particle_mass * particle_mass_invv * dist_diff * grad / constraint_num_neighbors[i]
+            position_delta = -stiffness[None] * particle_mass * particle_mass_invv * dist_diff * grad / constraint_num_neighbors[i]
             posi_tmp += position_delta
         position_delta_tmp[i] = posi_tmp
 
@@ -184,8 +187,6 @@ def forward(n):
     updata_velosity(n)
 
 gui = ti.GUI('Mass Spring System', res=(640, 640), background_color=0xdddddd)
-
-damping[None] = 8 #8 is the most suitable
 
 def CheckRepeatMesh(i,j,k,lists):
     if [i,j,k] in lists:
@@ -261,6 +262,13 @@ def Transform(rota_degree, trans_x, trans_y, point):
     point_trans = point_trans[:2]
     return point_trans
 
+def lidar_configuration(trans_x, trans_y, radius):
+    rotation = np.array([[1,0,0],[0,1,0],[0,0,1]])
+    translation = np.array([trans_x, trans_y, 0.0])
+    Transform = fcl.Transform(rotation, translation)
+    lidar = fcl.CollisionObject(fcl.Cylinder(radius, 0), Transform)
+    return lidar
+
 def stick_configuration(rota_degree, trans_x, trans_y, length, width, top_left, top_right, bottom_left, bottom_right):
     rotation = np.array([[np.cos(rota_degree/180*np.pi), -np.sin(rota_degree/180*np.pi), 0.0],
                          [np.sin(rota_degree/180*np.pi), np.cos(rota_degree/180*np.pi), 0.0],
@@ -306,10 +314,78 @@ def Set_Center(n):
     tmp_y = p2 - center[1]
     move_obstacle(n, tmp_x, tmp_y)
 
+def Set_Stiffness():
+    tmpstiff = float(input("stiffness:"))
+    stiffness[None] = tmpstiff
 
-def Set_Module():
-    index = int(input("Module index:"))
+def Set_Module(module_dict):
+    print(module_dict)
+    str = input("Module index:")
+    while(not str.isdigit()):
+        print("Please enter integer!")
+        str = input(("Module index:"))
+    index = int(str)
     return index
+
+def Set_lidar(tran_x, tran_y, angle, length,stick_corners,n, connection_matrix, tri_mesh):
+    Lidar_number = int(input("Lidar number:"))
+    Tip_x = tran_x + length / 2 * np.cos(angle/180*np.pi)
+    Tip_y = tran_y + length / 2 * np.sin(angle/180*np.pi)
+    Lidar_angle = angle + 90
+    angle_lists = np.linspace(Lidar_angle, Lidar_angle - 180, num=Lidar_number)
+    distance_lists = np.linspace(0, LidarMaxDistance[None], num=int(LidarMaxDistance[None]/0.01)) #steps
+    X=x.to_numpy()[:n]
+    verts = np.c_[X,np.zeros(n)]#fcl -> 3_D field
+    contact_lists = {}
+    for Li_distance in distance_lists:
+        gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
+        gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
+        gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
+        gui.line(begin=stick_corners[3],end=stick_corners[0],color=0x0, radius=1)
+        for i in range(n):
+            gui.circles(X[i:i+1], color=0xffaa77, radius=3)
+            for j in connection_matrix[i]:
+                gui.line(begin=X[i], end=X[j], radius=2, color=0x445566)
+        for Li_angle in angle_lists:
+            tmp = -1
+            if contact_lists.get(Li_angle, -1) != -1:
+                tmp = Li_distance
+                Li_distance = contact_lists.get(Li_angle)
+            pos_x = Tip_x - Li_distance * (-np.cos(Li_angle/180*np.pi))
+            pos_y = Tip_y + Li_distance * (np.sin(Li_angle/180*np.pi))
+            lidar = lidar_configuration(pos_x, pos_y, 0.001) #radius -> 0.02
+            minimum_distance = checkLidarCollistion(lidar, verts, tri_mesh)
+            if minimum_distance == -1: #lidar contact the obstacle
+                contact_lists[Li_angle] = Li_distance
+            if tmp != -1:
+                Li_distance = tmp
+            gui.circles(np.array([[pos_x, pos_y]]), color=0xffaa77, radius=5) #draw circles
+        gui.show()
+    time.sleep(10)
+    print(contact_lists)
+
+def checkLidarCollistion(lidar, verts, tris):
+    mesh = fcl.BVHModel()
+    mesh.beginModel(len(verts), len(tris))
+    mesh.addSubModel(verts, tris)
+    mesh.endModel()
+    mesh_obj = fcl.CollisionObject(mesh)
+    objs = [mesh_obj, lidar]
+    manager = fcl.DynamicAABBTreeCollisionManager()
+    manager.registerObjects(objs)
+    manager.setup()
+    crequest = fcl.CollisionRequest(enable_contact=True)
+    drequest = fcl.DistanceRequest(enable_nearest_points=True)
+    cdata = fcl.CollisionData(crequest, fcl.CollisionResult())
+    ddata = fcl.DistanceData(drequest, fcl.DistanceResult())
+    manager.collide(cdata, fcl.defaultCollisionCallback)
+    manager.distance(ddata, fcl.defaultDistanceCallback)
+    minimum_distance = ddata.result.min_distance
+    return minimum_distance
+
+def Set_lidarMaxDistance():
+    tmp = float(input("LidarMaxDistance:"))
+    LidarMaxDistance[None] = tmp
 
 def compute_direction(rotate_direction, transform_matrix, length, width, nearest_point):
     top_left = np.array([-length / 2, width / 2, 0])
@@ -344,6 +420,10 @@ def compute_direction(rotate_direction, transform_matrix, length, width, nearest
             direction = bottom_left_trans- top_left_trans
     return direction
 
+
+stiffness[None] = 1
+damping[None] = 8 #8 is the most suitable
+LidarMaxDistance[None] = 0.1
 def main():
     #Read all mesh points from txt.file
     points = []
@@ -374,17 +454,24 @@ def main():
                     if tri_matrix[i,k] == 1 and tri_matrix[j,k] == 1:
                         if CheckRepeatMesh(i,j,k,tri_mesh): #True -> add False -> Remove
                             tri_mesh.append([i,j,k])
+    connection_matrix = []
+    for i in range(n):
+        tmp = []
+        for j in range(i + 1, n):
+            if rest_length[i, j] != 0:
+                tmp.append(j)
+        connection_matrix.append(tmp) #spring connection
     tri_mesh = np.array(tri_mesh)
     single_particle_list = check_single_particle()
     index = 0
-    omega = 0.5
+    omega = 0
     initial_angle = 125
-    tolerance = 0.02
+    tolerance = 0.02 #stick and obstacle
     scale = 1
-    length = 0.5
-    width = 0.02
-    trans_x = 0.3
-    trans_y = 0.3
+    length = 0.5 #fixed or adjustable
+    width = 0.005 #fixed
+    trans_x = 0.3 #initial postion
+    trans_y = 0.3 #initial position
     refresh_EndEffector = 0
     tmp_trans_x = -1
     tmp_trans_y = -1
@@ -401,33 +488,37 @@ def main():
                 exit()
             elif e.key == gui.SPACE:
                 #paused[None] = not paused[None]
-                Module_index = Set_Module()
+                Module_index = Set_Module(Module)
                 if(Module_index == Module['EndEffector']):
                     print("Set End Effector")
                     if refresh_EndEffector == 0:
                         tmp_trans_x, tmp_trans_y, tmp_initial_angle, refresh_EndEffector = Set_EndEffector(length)
-                if(Module_index == Module['EndEffector']):
+                if(Module_index == Module['Extension']):
                     print("Set Extension")
                 if(Module_index == Module['Obstacles']):
                     print("Set center point")
                     Set_Center(n)
                 if(Module_index == Module['stiffness']):
                     print("Set stiffness")
+                    Set_Stiffness()
                 if(Module_index == Module['LidarSwitch']):
                     print("Lidar Switch on")
+                    Set_lidar(trans_x, trans_y, initial_angle + omega*index, length, stick_corners, n, connection_matrix, tri_mesh)
                 if(Module_index == Module['LidarMaxDistance']):
                     print("Set Lidar max distance")
+                    Set_lidarMaxDistance()
                 if(Module_index == Module['BoundaryPoints:']):
                     print("Return boundary")
             # elif e.key == ti.GUI.LMB:
             #     print(e.pos[0], e.pos[1])
         collision = -10
         #if not paused[None]:
-        if refresh_EndEffector == 1:
+        if refresh_EndEffector == 1:  #Move EndEffector
             trans_x=tmp_trans_x
             trans_y=tmp_trans_y
             initial_angle=tmp_initial_angle
             refresh_EndEffector=0
+
         index += 1
         for step in range(1):
             forward(n)
@@ -469,10 +560,9 @@ def main():
         Delta_x_sequence.from_numpy(Delta_x_se)
         Delta_y_sequence.from_numpy(Delta_y_se)
         gui.line(begin=(0.0, bottom_y), end=(1.0, bottom_y), color=0x0, radius=1)
-        for i in range(num_particles[None]):
-            for j in range(i + 1, num_particles[None]):
-                if rest_length[i, j] != 0:
-                    gui.line(begin=X[i], end=X[j], radius=2, color=0x445566)
+        for i in range(n):
+            for j in connection_matrix[i]:
+                gui.line(begin=X[i], end=X[j], radius=2, color=0x445566)
 
         gui.text(content=f'C: clear all; Space: pause', pos=(0, 0.95), color=0x0)
         gui.show()
