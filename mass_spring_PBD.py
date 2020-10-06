@@ -148,6 +148,12 @@ def new_costraint(p1_index: ti.i32, p2_index: ti.i32, dist: ti.f32):
     rest_length[p1_index, p2_index] = dist
     rest_length[p2_index, p1_index] = dist
 
+@ti.kernel
+def move_obstacle(n: ti.i32, delta_x: ti.f32, delta_y: ti.f32):
+    for i in range(n):
+        x[i].x += delta_x
+        x[i].y += delta_y
+
 def check_single_particle():
     cons = rest_length.to_numpy()
     invalid_particle = []
@@ -291,6 +297,16 @@ def Set_EndEffector(length):  #Adjust the position and angle of the end Effector
     p1 = p1 - length / 2 * np.cos(angle/180*np.pi)
     return p1,p2,angle,1
 
+def Set_Center(n):
+    X = x.to_numpy()[:n]
+    p1 = float(input("position_x:"))
+    p2 = float(input("position_y:"))
+    center = np.mean(X,axis=0)
+    tmp_x = p1 - center[0]
+    tmp_y = p2 - center[1]
+    move_obstacle(n, tmp_x, tmp_y)
+
+
 def Set_Module():
     index = int(input("Module index:"))
     return index
@@ -361,7 +377,7 @@ def main():
     tri_mesh = np.array(tri_mesh)
     single_particle_list = check_single_particle()
     index = 0
-    omega = 0
+    omega = 0.5
     initial_angle = 125
     tolerance = 0.02
     scale = 1
@@ -370,7 +386,6 @@ def main():
     trans_x = 0.3
     trans_y = 0.3
     refresh_EndEffector = 0
-    refresh_CenterObstacle = 0
     tmp_trans_x = -1
     tmp_trans_y = -1
     tmp_initial_angle = -1
@@ -385,7 +400,7 @@ def main():
             if e.key in [ti.GUI.ESCAPE, ti.GUI.EXIT]:
                 exit()
             elif e.key == gui.SPACE:
-                paused[None] = not paused[None]
+                #paused[None] = not paused[None]
                 Module_index = Set_Module()
                 if(Module_index == Module['EndEffector']):
                     print("Set End Effector")
@@ -395,7 +410,7 @@ def main():
                     print("Set Extension")
                 if(Module_index == Module['Obstacles']):
                     print("Set center point")
-                    if 
+                    Set_Center(n)
                 if(Module_index == Module['stiffness']):
                     print("Set stiffness")
                 if(Module_index == Module['LidarSwitch']):
@@ -407,23 +422,23 @@ def main():
             # elif e.key == ti.GUI.LMB:
             #     print(e.pos[0], e.pos[1])
         collision = -10
-        if not paused[None]:
-            if refresh_EndEffector == 1:
-                trans_x=tmp_trans_x
-                trans_y=tmp_trans_y
-                initial_angle=tmp_initial_angle
-                refresh_EndEffector=0
-            index += 1
-            for step in range(1):
-                forward(n)
-                X = x.to_numpy()[:n]
-                verts = np.c_[X,np.zeros(n)]#fcl -> 3_D field
-                if rotate_direction == 'counter-clock-wise':
-                    angle = initial_angle + omega*index
-                else:
-                    angle = initial_angle - omega*index
-                transform_matrix, stick_corners, stick = stick_configuration(angle, trans_x, trans_y, length, width, top_left, top_right, bottom_left, bottom_right)
-                nearest_point, collision, delta = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, trans_x, trans_y, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
+        #if not paused[None]:
+        if refresh_EndEffector == 1:
+            trans_x=tmp_trans_x
+            trans_y=tmp_trans_y
+            initial_angle=tmp_initial_angle
+            refresh_EndEffector=0
+        index += 1
+        for step in range(1):
+            forward(n)
+            X = x.to_numpy()[:n]
+            verts = np.c_[X,np.zeros(n)]#fcl -> 3_D field
+            if rotate_direction == 'counter-clock-wise':
+                angle = initial_angle + omega*index
+            else:
+                angle = initial_angle - omega*index
+            transform_matrix, stick_corners, stick = stick_configuration(angle, trans_x, trans_y, length, width, top_left, top_right, bottom_left, bottom_right)
+            nearest_point, collision, delta = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, trans_x, trans_y, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
         gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
         gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
         gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
