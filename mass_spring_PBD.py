@@ -387,6 +387,18 @@ def Set_lidarMaxDistance():
     tmp = float(input("LidarMaxDistance:"))
     LidarMaxDistance[None] = tmp
 
+def Set_Motion():
+    motion_mode = int(input("Enter Motion Mode"))
+    if motion_mode == 0: #Translation
+        Motion_distance = float(input("Enter the motion distance"))
+        return Motion_distance
+    elif motion_mode == 1: #Rotation
+        Motion_angle = float(input("Enter the motion angle"))
+        return Motion_angle
+    else:
+        print("Invalid Input")
+
+
 def compute_direction(rotate_direction, transform_matrix, length, width, nearest_point):
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
@@ -476,17 +488,18 @@ def main():
     tmp_trans_x = -1
     tmp_trans_y = -1
     tmp_initial_angle = -1
+    Motion_switch_on = 0
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
     bottom_right = np.array([length / 2, -width / 2, 0])
     rotate_direction = 'counter-clock-wise' #or 'clock-wise'
-    Module = {'EndEffector':0, 'Extension':1 ,'Obstacles':2, 'stiffness':3, 'LidarSwitch':4, 'LidarMaxDistance':5,'BoundaryPoints:':6} #Mode
+    Module = {'EndEffector':0, 'Extension':1 ,'Obstacles':2, 'stiffness':3, 'LidarSwitch':4, 'LidarMaxDistance':5,'BoundaryPoints':6, 'Motion':7} #Mode
     while True:
         for e in gui.get_events(ti.GUI.PRESS):
             if e.key in [ti.GUI.ESCAPE, ti.GUI.EXIT]:
                 exit()
-            elif e.key == gui.SPACE:
+            elif e.key == gui.SPACE and Motion_switch_on == 0:
                 #paused[None] = not paused[None]
                 Module_index = Set_Module(Module)
                 if(Module_index == Module['EndEffector']):
@@ -507,8 +520,12 @@ def main():
                 if(Module_index == Module['LidarMaxDistance']):
                     print("Set Lidar max distance")
                     Set_lidarMaxDistance()
-                if(Module_index == Module['BoundaryPoints:']):
+                if(Module_index == Module['BoundaryPoints']):
                     print("Return boundary")
+                if(Module_index == Module['Motion']):
+                    print("Motion command:")
+                    print("Tranalation:0, Rotation:1")
+                    Motion_switch_on = Set_Motion()
             # elif e.key == ti.GUI.LMB:
             #     print(e.pos[0], e.pos[1])
         collision = -10
