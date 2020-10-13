@@ -3,6 +3,7 @@ import math as math
 import fcl
 import numpy as np
 import time
+import cv2
 
 ti.init(debug=False,arch=ti.cpu)
 real = ti.f32 #data type f32 -> float in C
@@ -523,7 +524,7 @@ def compute_direction(rotate_direction, transform_matrix, length, width, nearest
     return direction
 
 
-stiffness[None] = 0.1 #adjustable
+stiffness[None] = 0.05 #adjustable
 damping[None] = 8 #8 is the most suitable
 LidarMaxDistance[None] = 0.1
 def main():
@@ -566,7 +567,7 @@ def main():
     tri_mesh = np.array(tri_mesh)
     single_particle_list = check_single_particle()
     index = 0
-    omega = 0.5 #unit:degree
+    omega = 0.4 #unit:degree
     speed = 0.001 #normalized between [0,1]
     initial_angle = 0
     tolerance = 0.02 #stick and obstacle
@@ -583,6 +584,7 @@ def main():
     Motion_Index = -1
     Motion_value = -1
     FixedPointsLists = []
+    Contour_or_Mesh = True #True -> Mesh False -> Contour
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
@@ -591,9 +593,7 @@ def main():
     Module = {'EndEffector':0, 'Extension':1 ,'Obstacles':2, 'stiffness':3, 'LidarSwitch':4, 'LidarMaxDistance':5,'FixedPoints':6, 'Motion':7, 'Length': 8} #Mode
     while True:
         for e in gui.get_events(ti.GUI.PRESS):
-            if e.key in [ti.GUI.ESCAPE, ti.GUI.EXIT]:
-                exit()
-            elif e.key == gui.SPACE and not Motion_switch_on:
+            if e.key == gui.SPACE and not Motion_switch_on:
                 #paused[None] = not paused[None]
                 Module_index = Set_Module(Module)
                 if(Module_index == Module['EndEffector']):
@@ -640,6 +640,7 @@ def main():
         for step in range(1):
             forward(n)
             X = x.to_numpy()[:n]
+            OuterPoints = cv2.convexHull(X)
             verts = np.c_[X,np.zeros(n)]#fcl -> 3_D field
             angle = initial_angle
             if Motion_switch_on:
@@ -650,7 +651,6 @@ def main():
                             initial_angle += omega
                         else:
                             initial_angle -= omega
-                        print(initial_angle)
                     else:
                         Motion_switch_on = False
                         index = 0
@@ -664,6 +664,7 @@ def main():
                         index = 0
             transform_matrix, stick_corners, stick = stick_configuration(angle, trans_x, trans_y, length, width, top_left, top_right, bottom_left, bottom_right)
             nearest_point, collision, delta = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, trans_x, trans_y, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
+            #Rotation collision and translation collision should use different strategies
         gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
         gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
         gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
@@ -687,18 +688,26 @@ def main():
                         Delta_y_se[i] = delta_y
                         print("Delta_x", delta_x)
                         print("Delta_y", delta_y)
-                        gui.circles(X[i:i+1], color=0xffaa77, radius=5)
-                    else:
-                        gui.circles(X[i:i+1], color=0xffaa77, radius=5)
+                        # while True:
+                        #     pp=2
+        if not Contour_or_Mesh:
+            for i in OuterPoints:
+                gui.circles(i, color=0xffaa77, radius=5)
+            for i in range(len(OuterPoints)):
+                if i!= len(OuterPoints) - 1:
+                    gui.line(begin=OuterPoints[i].squeeze(),end=OuterPoints[i+1].squeeze(),radius=2,color=0x445566)
                 else:
-                    gui.circles(X[i:i+1], color=0xffaa77, radius=5)
+                    gui.line(begin=OuterPoints[i].squeeze(),end=OuterPoints[0].squeeze(),radius=2,color=0x445566)
         actuation_type.from_numpy(actuation_type_tmp)
         Delta_x_sequence.from_numpy(Delta_x_se)
         Delta_y_sequence.from_numpy(Delta_y_se)
         gui.line(begin=(0.0, bottom_y), end=(1.0, bottom_y), color=0x0, radius=1)
-        for i in range(n):
-            for j in connection_matrix[i]:
-                gui.line(begin=X[i], end=X[j], radius=2, color=0x445566)
+        if Contour_or_Mesh:
+            for i in range(n):
+                if i not in single_particle_list:
+                    gui.circles(X[i:i+1], color=0xffaa77, radius=3)
+                    for j in connection_matrix[i]:
+                        gui.line(begin=X[i], end=X[j], radius=2, color=0x445566)
 
         gui.text(content=f'C: clear all; Space: pause', pos=(0, 0.95), color=0x0)
         gui.show()
