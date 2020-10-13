@@ -571,7 +571,7 @@ def main():
     speed = 0.001 #normalized between [0,1]
     initial_angle = 0
     tolerance = 0.02 #stick and obstacle
-    scale = 1
+    scale = 1  #response intensity
     length = 0.5 #fixed or adjustable
     width = 0.005 #fixed
     trans_x = 0.15 #initial postion
@@ -642,18 +642,24 @@ def main():
             X = x.to_numpy()[:n]
             OuterPoints = cv2.convexHull(X)
             verts = np.c_[X,np.zeros(n)]#fcl -> 3_D field
-            angle = initial_angle
             if Motion_switch_on:
                 if Motion_Index == 1:   #Rotation
-                    if omega*index <= abs(Motion_value):
-                        index += 1
-                        if rotate_direction == 'counter-clock-wise':
-                            initial_angle += omega
-                        else:
+                    if Motion_value < 0:
+                        if omega*index <= abs(Motion_value):
+                            index += 1
                             initial_angle -= omega
+                            rotate_direction = 'clock-wise'
+                        else:
+                            Motion_switch_on = False
+                            index = 0
                     else:
-                        Motion_switch_on = False
-                        index = 0
+                        if omega*index <= abs(Motion_value):
+                            index += 1
+                            initial_angle += omega
+                            rotate_direction = 'counter-clock-wise'
+                        else:
+                            Motion_switch_on = False
+                            index = 0
                 elif Motion_Index == 0: #Translation(angle remains the same)
                     if speed*index <= abs(Motion_value):
                         index += 1
@@ -662,6 +668,7 @@ def main():
                     else:
                         Motion_switch_on = False
                         index = 0
+            angle = initial_angle
             transform_matrix, stick_corners, stick = stick_configuration(angle, trans_x, trans_y, length, width, top_left, top_right, bottom_left, bottom_right)
             nearest_point, collision, delta = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, trans_x, trans_y, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
             #Rotation collision and translation collision should use different strategies
@@ -677,9 +684,14 @@ def main():
                 if i in FixedPointsLists:
                     actuation_type_tmp[i] = -1
                 if collision == 1:  #interaction of the cylinder and mass
-                    if X[i:i+1][0][0] == nearest_point[0]: #control point
+                    if X[i:i+1][0][0] == nearest_point[0] and X[i:i+1][0][1] == nearest_point[1]: #control point
                         actuation_type_tmp[i] = 2
-                        direction = compute_direction(rotate_direction, transform_matrix, length, width, nearest_point)
+                        #direction is computed in two different ways:rotation or translation
+                        if Motion_Index == 1:
+                            direction = compute_direction(rotate_direction, transform_matrix, length, width, nearest_point)
+                        elif Motion_Index == 0:
+                            direction =
+                        print("Dircettion:", direction)
                         #print("Direction:", direction) #force direction
                         #print("Distance:", delta) #move distance
                         delta_x = scale * delta * direction[0] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
@@ -689,7 +701,17 @@ def main():
                         print("Delta_x", delta_x)
                         print("Delta_y", delta_y)
                         # while True:
-                        #     pp=2
+                        #     gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
+                        #     gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
+                        #     gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
+                        #     gui.line(begin=stick_corners[3],end=stick_corners[0],color=0x0, radius=1)
+                        #     X = x.to_numpy()[:n]
+                        #     for i in range(n):
+                        #         if X[i:i+1][0][0] == nearest_point[0] and X[i:i+1][0][1] == nearest_point[1]:
+                        #             gui.circles(X[i:i+1], color=0xffaa77, radius=10)
+                        #         else:
+                        #             gui.circles(X[i:i+1], color=0xffaa77, radius=3)
+                        #     gui.show()
         if not Contour_or_Mesh:
             for i in OuterPoints:
                 gui.circles(i, color=0xffaa77, radius=5)
