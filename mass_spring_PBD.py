@@ -299,37 +299,73 @@ def compute_distance(p1, p2):
     return np.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
 
 def Set_EndEffector(length):  #Adjust the position and angle of the end Effector
-    p1 = float(input("position_x:"))
-    p2 = float(input("position_y:"))
-    angle = float(input("angle:"))
+    while True:
+        try:
+            p1 = float(input("position_x:"))
+            break
+        except ValueError:
+            print("That was no valid number.  Try again...")
+    while True:
+        try:
+            p2 = float(input("position_y:"))
+            break
+        except ValueError:
+            print("That was no valid number.  Try again...")
+    while True:
+        try:
+            angle = float(input("angle:"))
+            break
+        except ValueError:
+            print("That was no valid number.  Try again...")
     p2 = p2 - length / 2 * np.sin(angle/180*np.pi)
     p1 = p1 - length / 2 * np.cos(angle/180*np.pi)
     return p1,p2,angle,1
 
 def Set_Center(n):
+    while True:
+        try:
+            p1 = float(input("position_x:"))
+            break
+        except ValueError:
+            print("That was no valid number.  Try again...")
+    while True:
+        try:
+            p2 = float(input("position_y:"))
+            break
+        except ValueError:
+            print("That was no valid number.  Try again...")
     X = x.to_numpy()[:n]
-    p1 = float(input("position_x:"))
-    p2 = float(input("position_y:"))
     center = np.mean(X,axis=0)
     tmp_x = p1 - center[0]
     tmp_y = p2 - center[1]
     move_obstacle(n, tmp_x, tmp_y)
 
 def Set_Stiffness():
-    tmpstiff = float(input("stiffness:"))
+    while True:
+        try:
+            tmpstiff = float(input("stiffness:"))
+            break
+        except ValueError:
+            print("That was no valid number.  Try again...")
     stiffness[None] = tmpstiff
 
 def Set_Module(module_dict):
     print(module_dict)
-    str = input("Module index:")
-    while(not str.isdigit()):
-        print("Please enter integer!")
-        str = input(("Module index:"))
-    index = int(str)
+    while True:
+        try:
+            index = int(input("Module index:"))
+            break
+        except ValueError:
+            print("That was no valid number.  Try again...")
     return index
 
 def Set_lidar(tran_x, tran_y, angle, length,stick_corners,n, connection_matrix, tri_mesh):
-    Lidar_number = int(input("Lidar number:"))
+    while True:
+        try:
+            Lidar_number = int(input("Lidar number:"))
+            break
+        except ValueError:
+            print("That was no valid number.  Try again...")
     Tip_x = tran_x + length / 2 * np.cos(angle/180*np.pi)
     Tip_y = tran_y + length / 2 * np.sin(angle/180*np.pi)
     Lidar_angle = angle + 90
@@ -385,16 +421,36 @@ def checkLidarCollistion(lidar, verts, tris):
     return minimum_distance
 
 def Set_lidarMaxDistance():
-    tmp = float(input("LidarMaxDistance:"))
+    while True:
+        try:
+            tmp = float(input("LidarMaxDistance:"))
+            break
+        except ValueError:
+            print("That was no valid number.  Try again...")
     LidarMaxDistance[None] = tmp
 
 def Set_Motion():
-    motion_mode = int(input("Enter Motion Mode:"))
+    while True:
+        try:
+            motion_mode = int(input("Enter Motion Mode:"))
+            break
+        except ValueError:
+            print("That was no valid number.  Try again...")
     if motion_mode == 0: #Translation
-        Motion_distance = float(input("Enter the motion distance:"))
+        while True:
+            try:
+                Motion_distance = float(input("Enter the motion distance:"))
+                break
+            except ValueError:
+                print("That was no valid number.  Try again...")
         return motion_mode, Motion_distance, True
     elif motion_mode == 1: #Rotation
-        Motion_angle = float(input("Enter the motion angle:"))
+        while True:
+            try:
+                Motion_angle = float(input("Enter the motion angle:"))
+                break
+            except ValueError:
+                print("That was no valid number.  Try again...")
         return motion_mode, Motion_angle, True
     else:
         print("Invalid Input")
@@ -467,7 +523,7 @@ def compute_direction(rotate_direction, transform_matrix, length, width, nearest
     return direction
 
 
-stiffness[None] = 1
+stiffness[None] = 0.1 #adjustable
 damping[None] = 8 #8 is the most suitable
 LidarMaxDistance[None] = 0.1
 def main():
@@ -588,7 +644,7 @@ def main():
             angle = initial_angle
             if Motion_switch_on:
                 if Motion_Index == 1:   #Rotation
-                    if omega*index <= Motion_value:
+                    if omega*index <= abs(Motion_value):
                         index += 1
                         if rotate_direction == 'counter-clock-wise':
                             initial_angle += omega
@@ -599,7 +655,7 @@ def main():
                         Motion_switch_on = False
                         index = 0
                 elif Motion_Index == 0: #Translation(angle remains the same)
-                    if speed*index <= Motion_value:
+                    if speed*index <= abs(Motion_value):
                         index += 1
                         trans_x += speed * np.cos(angle/180*np.pi)
                         trans_y += speed * np.sin(angle/180*np.pi)
@@ -631,7 +687,7 @@ def main():
                         Delta_y_se[i] = delta_y
                         print("Delta_x", delta_x)
                         print("Delta_y", delta_y)
-                        gui.circles(X[i:i+1], color=0xffaa77, radius=20)
+                        gui.circles(X[i:i+1], color=0xffaa77, radius=5)
                     else:
                         gui.circles(X[i:i+1], color=0xffaa77, radius=5)
                 else:
