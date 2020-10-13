@@ -361,7 +361,7 @@ def Set_lidar(tran_x, tran_y, angle, length,stick_corners,n, connection_matrix, 
                 Li_distance = tmp
             gui.circles(np.array([[pos_x, pos_y]]), color=0xffaa77, radius=5) #draw circles
         gui.show()
-    time.sleep(10)
+        time.sleep(0.5)
     print(contact_lists)
 
 def checkLidarCollistion(lidar, verts, tris):
@@ -388,15 +388,18 @@ def Set_lidarMaxDistance():
     LidarMaxDistance[None] = tmp
 
 def Set_Motion():
-    motion_mode = int(input("Enter Motion Mode"))
+    motion_mode = int(input("Enter Motion Mode:"))
     if motion_mode == 0: #Translation
-        Motion_distance = float(input("Enter the motion distance"))
-        return Motion_distance
+        Motion_distance = float(input("Enter the motion distance:"))
+        return motion_mode, Motion_distance, True
     elif motion_mode == 1: #Rotation
-        Motion_angle = float(input("Enter the motion angle"))
-        return Motion_angle
+        Motion_angle = float(input("Enter the motion angle:"))
+        return motion_mode, Motion_angle, True
     else:
         print("Invalid Input")
+        return -1, -1, False
+
+def Set_FixedPoints():
 
 
 def compute_direction(rotate_direction, transform_matrix, length, width, nearest_point):
@@ -476,7 +479,8 @@ def main():
     tri_mesh = np.array(tri_mesh)
     single_particle_list = check_single_particle()
     index = 0
-    omega = 0
+    omega = 0.5 #unit:degree
+    speed = 0.002 #normalized between [0,1]
     initial_angle = 125
     tolerance = 0.02 #stick and obstacle
     scale = 1
@@ -488,18 +492,20 @@ def main():
     tmp_trans_x = -1
     tmp_trans_y = -1
     tmp_initial_angle = -1
-    Motion_switch_on = 0
+    Motion_switch_on = False
+    Motion_Index = -1
+    Motion_value = -1
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
     bottom_right = np.array([length / 2, -width / 2, 0])
     rotate_direction = 'counter-clock-wise' #or 'clock-wise'
-    Module = {'EndEffector':0, 'Extension':1 ,'Obstacles':2, 'stiffness':3, 'LidarSwitch':4, 'LidarMaxDistance':5,'BoundaryPoints':6, 'Motion':7} #Mode
+    Module = {'EndEffector':0, 'Extension':1 ,'Obstacles':2, 'stiffness':3, 'LidarSwitch':4, 'LidarMaxDistance':5,'FixedPoints':6, 'Motion':7, 'Length': 8} #Mode
     while True:
         for e in gui.get_events(ti.GUI.PRESS):
             if e.key in [ti.GUI.ESCAPE, ti.GUI.EXIT]:
                 exit()
-            elif e.key == gui.SPACE and Motion_switch_on == 0:
+            elif e.key == gui.SPACE and not Motion_switch_on:
                 #paused[None] = not paused[None]
                 Module_index = Set_Module(Module)
                 if(Module_index == Module['EndEffector']):
@@ -516,16 +522,24 @@ def main():
                     Set_Stiffness()
                 if(Module_index == Module['LidarSwitch']):
                     print("Lidar Switch on")
-                    Set_lidar(trans_x, trans_y, initial_angle + omega*index, length, stick_corners, n, connection_matrix, tri_mesh)
+                    Set_lidar(trans_x, trans_y, initial_angle, length, stick_corners, n, connection_matrix, tri_mesh)
                 if(Module_index == Module['LidarMaxDistance']):
                     print("Set Lidar max distance")
                     Set_lidarMaxDistance()
-                if(Module_index == Module['BoundaryPoints']):
-                    print("Return boundary")
+                if(Module_index == Module['FixedPoints']):
+                    print("Select Fixed points")
+                    Set_FixedPoints()
                 if(Module_index == Module['Motion']):
                     print("Motion command:")
                     print("Tranalation:0, Rotation:1")
-                    Motion_switch_on = Set_Motion()
+                    Motion_Index, Motion_value, Motion_switch_on = Set_Motion() #motion_index: 0 -> Translation 1-> Rotation
+                if(Module_index == Module['Length']):
+                    print("Set Length")
+                    length = float(input("Length:"))
+                    top_left = np.array([-length / 2, width / 2, 0])
+                    top_right = np.array([length / 2, width / 2, 0])
+                    bottom_left = np.array([-length / 2, -width / 2, 0])
+                    bottom_right = np.array([length / 2, -width / 2, 0])
             # elif e.key == ti.GUI.LMB:
             #     print(e.pos[0], e.pos[1])
         collision = -10
@@ -535,16 +549,31 @@ def main():
             trans_y=tmp_trans_y
             initial_angle=tmp_initial_angle
             refresh_EndEffector=0
-
-        index += 1
         for step in range(1):
             forward(n)
             X = x.to_numpy()[:n]
             verts = np.c_[X,np.zeros(n)]#fcl -> 3_D field
-            if rotate_direction == 'counter-clock-wise':
-                angle = initial_angle + omega*index
-            else:
-                angle = initial_angle - omega*index
+            angle = initial_angle
+            if Motion_switch_on:
+                if Motion_Index == 1:   #Rotation
+                    if omega*index <= Motion_value:
+                        index += 1
+                        if rotate_direction == 'counter-clock-wise':
+                            initial_angle += omega
+                        else:
+                            initial_angle -= omega
+                        print(initial_angle)
+                    else:
+                        Motion_switch_on = False
+                        index = 0
+                elif Motion_Index == 0: #Translation(angle remains the same)
+                    if speed*index <= Motion_value:
+                        index += 1
+                        trans_x += speed * np.cos(angle/180*np.pi)
+                        trans_y += speed * np.sin(angle/180*np.pi)
+                    else:
+                        Motion_switch_on = False
+                        index = 0
             transform_matrix, stick_corners, stick = stick_configuration(angle, trans_x, trans_y, length, width, top_left, top_right, bottom_left, bottom_right)
             nearest_point, collision, delta = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, trans_x, trans_y, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
         gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
