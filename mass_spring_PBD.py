@@ -80,14 +80,15 @@ def find_constraint(n: ti.i32):
 @ti.kernel
 def substep(n: ti.i32): # Compute force and new velocity
     for i in range(n):
-        v[i] *= ti.exp(-dt * damping[None]) # damping
-        total_force = ti.Vector(gravity) * particle_mass #gravity -> accelaration
+        if actuation_type[i] == 1:
+            v[i] *= ti.exp(-dt * damping[None]) # damping
+            total_force = ti.Vector(gravity) * particle_mass #gravity -> accelaration
+            v[i] += dt * total_force / particle_mass
         # if actuation_type[i] == 1:
         #     total_force = ti.Vector(H_force) * particle_mass
         if actuation_type[i] == 2: #control points by the cylinder
             x[i].x += Delta_x_sequence[i]
             x[i].y += Delta_y_sequence[i]
-        v[i] += dt * total_force / particle_mass
 
 @ti.kernel
 def collision_check(n: ti.i32):# Collide with ground
@@ -399,8 +400,38 @@ def Set_Motion():
         print("Invalid Input")
         return -1, -1, False
 
-def Set_FixedPoints():
+def Set_FixedPoints(stick_corners,n, connection_matrix):
+    FixedPoints = []
+    ContinueSelect = True
+    while ContinueSelect:
+        X=x.to_numpy()[:n]
+        for e in gui.get_events(ti.GUI.PRESS):
+            if e.key == ti.GUI.LMB:
+                SelectedPoint = Find_ClosePoints(e.pos[0], e.pos[1], X, n)
+                FixedPoints.append(SelectedPoint)
+                print(X[SelectedPoint])  #selected points are fixed
+            if e.key in [ti.GUI.ESCAPE, ti.GUI.EXIT]:
+                ContinueSelect = False
+        gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
+        gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
+        gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
+        gui.line(begin=stick_corners[3],end=stick_corners[0],color=0x0, radius=1)
+        for i in range(n):
+            gui.circles(X[i:i+1], color=0xffaa77, radius=3)
+            for j in connection_matrix[i]:
+                gui.line(begin=X[i], end=X[j], radius=2, color=0x445566)
+        gui.show()
+    return FixedPoints
 
+def Find_ClosePoints(p1_x, p1_y, X, n):
+    min_distance = 10000
+    closedPoint = -1
+    for i in range(n):
+        distance = (p1_x - X[i][0]) ** 2 + (p1_y - X[i][1]) ** 2
+        if distance <= min_distance:
+            closedPoint = i
+            min_distance = distance
+    return closedPoint
 
 def compute_direction(rotate_direction, transform_matrix, length, width, nearest_point):
     top_left = np.array([-length / 2, width / 2, 0])
@@ -480,14 +511,14 @@ def main():
     single_particle_list = check_single_particle()
     index = 0
     omega = 0.5 #unit:degree
-    speed = 0.002 #normalized between [0,1]
-    initial_angle = 125
+    speed = 0.001 #normalized between [0,1]
+    initial_angle = 0
     tolerance = 0.02 #stick and obstacle
     scale = 1
     length = 0.5 #fixed or adjustable
     width = 0.005 #fixed
-    trans_x = 0.3 #initial postion
-    trans_y = 0.3 #initial position
+    trans_x = 0.15 #initial postion
+    trans_y = 0.5 #initial position
     refresh_EndEffector = 0
     tmp_trans_x = -1
     tmp_trans_y = -1
@@ -495,6 +526,7 @@ def main():
     Motion_switch_on = False
     Motion_Index = -1
     Motion_value = -1
+    FixedPointsLists = []
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
@@ -528,7 +560,7 @@ def main():
                     Set_lidarMaxDistance()
                 if(Module_index == Module['FixedPoints']):
                     print("Select Fixed points")
-                    Set_FixedPoints()
+                    FixedPointsLists = Set_FixedPoints(stick_corners, n, connection_matrix)
                 if(Module_index == Module['Motion']):
                     print("Motion command:")
                     print("Tranalation:0, Rotation:1")
@@ -585,6 +617,8 @@ def main():
         Delta_y_se = np.zeros((max_num_particles,),dtype=float)
         for i in range(n):
             if i not in single_particle_list:
+                if i in FixedPointsLists:
+                    actuation_type_tmp[i] = -1
                 if collision == 1:  #interaction of the cylinder and mass
                     if X[i:i+1][0][0] == nearest_point[0]: #control point
                         actuation_type_tmp[i] = 2
@@ -597,7 +631,7 @@ def main():
                         Delta_y_se[i] = delta_y
                         print("Delta_x", delta_x)
                         print("Delta_y", delta_y)
-                        gui.circles(X[i:i+1], color=0xffaa77, radius=12)
+                        gui.circles(X[i:i+1], color=0xffaa77, radius=20)
                     else:
                         gui.circles(X[i:i+1], color=0xffaa77, radius=5)
                 else:
