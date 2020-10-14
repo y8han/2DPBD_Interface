@@ -490,7 +490,7 @@ def Find_ClosePoints(p1_x, p1_y, X, n):
             min_distance = distance
     return closedPoint
 
-def compute_direction(rotate_direction, transform_matrix, length, width, nearest_point):
+def compute_Rotationdirection(rotate_direction, transform_matrix, length, width, nearest_point):
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
@@ -523,11 +523,18 @@ def compute_direction(rotate_direction, transform_matrix, length, width, nearest
             direction = bottom_left_trans- top_left_trans
     return direction
 
+def compute_Translationdirection(angle, motion_value):
+    if motion_value >= 0:
+        direction = [np.cos(angle/180*np.pi), np.sin(angle/180*np.pi)]
+        return direction
+    else:
+        direction = [-np.cos(angle/180*np.pi), -np.sin(angle/180*np.pi)]
+        return direction
 
 stiffness[None] = 0.05 #adjustable
 damping[None] = 8 #8 is the most suitable
 LidarMaxDistance[None] = 0.1
-def main():
+def main(Contour_or_Mesh):
     #Read all mesh points from txt.file
     points = []
     with open('./Contour_points/vertex.txt', 'r') as f:
@@ -584,7 +591,6 @@ def main():
     Motion_Index = -1
     Motion_value = -1
     FixedPointsLists = []
-    Contour_or_Mesh = True #True -> Mesh False -> Contour
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
@@ -687,19 +693,18 @@ def main():
                     if X[i:i+1][0][0] == nearest_point[0] and X[i:i+1][0][1] == nearest_point[1]: #control point
                         actuation_type_tmp[i] = 2
                         #direction is computed in two different ways:rotation or translation
-                        if Motion_Index == 1:
-                            direction = compute_direction(rotate_direction, transform_matrix, length, width, nearest_point)
-                        elif Motion_Index == 0:
-                            direction =
-                        print("Dircettion:", direction)
-                        #print("Direction:", direction) #force direction
+                        if Motion_Index == 1: #rotation
+                            direction = compute_Rotationdirection(rotate_direction, transform_matrix, length, width, nearest_point)
+                        elif Motion_Index == 0: #translation
+                            direction = compute_Translationdirection(angle, Motion_value)
+                        #print("Dircettion:", direction)
                         #print("Distance:", delta) #move distance
                         delta_x = scale * delta * direction[0] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
                         delta_y = scale * delta * direction[1] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
                         Delta_x_se[i] = delta_x
                         Delta_y_se[i] = delta_y
-                        print("Delta_x", delta_x)
-                        print("Delta_y", delta_y)
+                        # print("Delta_x", delta_x)
+                        # print("Delta_y", delta_y)
                         # while True:
                         #     gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
                         #     gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
@@ -735,5 +740,6 @@ def main():
         gui.show()
 
 if __name__ == '__main__':
-    main()
+    Contour_or_Mesh = True #True -> Mesh False -> Contour
+    main(Contour_or_Mesh)
 
