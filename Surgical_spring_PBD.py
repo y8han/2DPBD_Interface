@@ -11,12 +11,12 @@ ti.init(debug=False,arch=ti.cpu)
 real = ti.f32 #data type f32 -> float in C
 
 max_num_particles = 1000
-lambda_epsilon = 0.0 #user specified relaxation parameter(important) -> adjustable
 dt = 1e-2#simulation time step(important) -> adjustable
 dt_inv = 1 / dt
 dx = 0.02
 dim = 2
 pbd_num_iters =30#Iteration number(important) -> adjustable
+max_triangle = 10000
 
 scalar = lambda: ti.var(dt=real) #2D dense tensor
 vec = lambda: ti.Vector(dim, dt=real) #2*1 vector(each element in a tensor)
@@ -27,11 +27,14 @@ paused = ti.var(ti.i32, shape=())
 damping = ti.var(ti.f32, shape=())
 stiffness = ti.var(ti.f32, shape=())
 LidarMaxDistance = ti.var(ti.f32, shape=())
+num_trian = ti.var(ti.i32, shape=())
 
-particle_mass = 1 #mi
-particle_mass_inv = 1 / particle_mass # 1 / mi
-particle_mass_invv = 1 / (particle_mass_inv + particle_mass_inv + lambda_epsilon)
 maximum_constraints = 50
+
+trian_volumn = scalar()
+triangle_area = scalar()
+volumn_constraint_num = ti.var(ti.i32)
+volumn_constraint_list = scalar()
 
 Delta_x_sequence = scalar()
 Delta_y_sequence = scalar()
@@ -39,11 +42,13 @@ Delta_y_sequence = scalar()
 bottom_y = 0.00
 bottom_x = 1.00
 epsolon = 0.0001 #digit accurary(important) -> adjustable
+area_epsolon = 1e-11
 
 x, v, old_x = vec(), vec(), vec()
 actuation_type = scalar()
 total_constraint = ti.var(ti.i32, shape=())
 # rest_length[i, j] = 0 means i and j are not connected
+mass = scalar()
 rest_length = scalar()
 position_delta_tmp = vec()
 position_delta_sum = vec()
@@ -57,7 +62,10 @@ previous_minimum_distance = -10000
 @ti.layout  #Environment layout(placed in ti.layout) initialization of the dimensiond of each tensor variables(global)
 def place():
     ti.root.dense(ti.ij, (max_num_particles, max_num_particles)).place(rest_length)
-    ti.root.dense(ti.i, max_num_particles).place(x, v, old_x, actuation_type, position_delta_tmp, position_delta_sum, Delta_x_sequence, Delta_y_sequence) #initialzation to zero
+    ti.root.dense(ti.i, max_triangle).place(volumn_constraint_list)
+    ti.root.dense(ti.ij, (max_triangle, 4)).place(trian_volumn)
+    ti.root.dense(ti.i, max_triangle).place(triangle_area)
+    ti.root.dense(ti.i, max_num_particles).place(mass, volumn_constraint_num, x, v, old_x, actuation_type, position_delta_tmp, position_delta_sum, Delta_x_sequence, Delta_y_sequence) #initialzation to zero
     nb_node = ti.root.dense(ti.i, max_num_particles)
     nb_node.place(constraint_num_neighbors)
     nb_node.dense(ti.j, maximum_constraints).place(constraint_neighbors)
@@ -81,14 +89,39 @@ def find_constraint(n: ti.i32):
         constraint_num_neighbors[i] = nb_i
 
 @ti.kernel
+def find_area_constraint(n: ti.i32):
+    for i in range(n):
+        p1_index = trian_volumn[i, 0]
+        p2_index = trian_volumn[i, 1]
+        p3_index = trian_volumn[i, 2]
+        p1 = x[int(p1_index)]
+        p2 = x[int(p2_index)]
+        p3 = x[int(p3_index)]
+        p10 = p1.x
+        p11 = p1.y
+        p20 = p2.x
+        p21 = p2.y
+        p30 = p3.x
+        p31 = p3.y
+        area = 0.5 * ((p10 - p20)*(p11 - p31) - (p11 - p21)*(p10 - p30))
+        if(abs(abs(area) - trian_volumn[i, 3]) > area_epsolon):
+            volumn_constraint_list[i] = area
+            volumn_constraint_num[int(p1_index)] += 1
+            volumn_constraint_num[int(p2_index)] += 1
+            volumn_constraint_num[int(p3_index)] += 1
+        else:
+            volumn_constraint_list[i] = 0.0
+
+
+@ti.kernel
 def substep(n: ti.i32): # Compute force and new velocity
     for i in range(n):
         if actuation_type[i] == 1:
             v[i] *= ti.exp(-dt * damping[None]) # damping
-            total_force = ti.Vector(gravity) * particle_mass #gravity -> accelaration
-            v[i] += dt * total_force / particle_mass
+            total_force = ti.Vector(gravity) * mass[i] #gravity -> accelaration
+            v[i] += dt * total_force / mass[i]
         # if actuation_type[i] == 1:
-        #     total_force = ti.Vector(H_force) * particle_mass
+        #     total_force = ti.Vector(H_force) * mass[i]
         if actuation_type[i] == 2: #control points by the cylinder
             x[i].x += Delta_x_sequence[i]
             x[i].y += Delta_y_sequence[i]
@@ -120,15 +153,85 @@ def stretch_constraint(n: ti.i32):
     for i in range(n):
         pos_i = x[i]
         posi_tmp = ti.Vector([0.0, 0.0])
+        mass_i_inv = 1 / mass[i]
         for j in range(constraint_num_neighbors[i]):
             p_j = constraint_neighbors[i, j]
             pos_j = x[p_j]
             x_ij = pos_i - pos_j
             dist_diff = x_ij.norm() - rest_length[i, p_j]
             grad = x_ij.normalized()
-            position_delta = -stiffness[None] * particle_mass * particle_mass_invv * dist_diff * grad / constraint_num_neighbors[i]
+            mass_j_inv = 1 / mass[p_j]
+            mass_ij_inv = 1 / (mass_i_inv + mass_j_inv)
+            position_delta = -stiffness[None] * mass_i_inv * mass_ij_inv * dist_diff * grad / constraint_num_neighbors[i]
             posi_tmp += position_delta
         position_delta_tmp[i] = posi_tmp
+
+@ti.kernel
+def area_constraint(n: ti.i32):
+    for i in range(n):
+        if(volumn_constraint_list[i] != 0.0):
+            diff_volumn = abs(volumn_constraint_list[i]) - trian_volumn[i, 3]
+            p1_index = trian_volumn[i, 0]
+            p2_index = trian_volumn[i, 1]
+            p3_index = trian_volumn[i, 2]
+            #position of each particle
+            p1 = x[int(p1_index)]
+            p2 = x[int(p2_index)]
+            p3 = x[int(p3_index)]
+            p10 = p1.x
+            p11 = p1.y
+            p20 = p2.x
+            p21 = p2.y
+            p30 = p3.x
+            p31 = p3.y
+            if volumn_constraint_list[i] < 0:  #area smaller than 0
+                grad_x1 = p31/2 - p21/2
+                grad_y1 = p20/2 - p30/2
+                grad_x2 = p11/2 - p31/2
+                grad_y2 = p30/2 - p10/2
+                grad_x3 = p21/2 - p11/2
+                grad_y3 = p10/2 - p20/2
+                grad_p1 = ti.Vector([grad_x1, grad_y1])
+                tmp_p1 = grad_p1.norm() * grad_p1.norm()
+                w_p1 = 1 / mass[int(p1_index)]
+                grad_p2 = ti.Vector([grad_x2, grad_y2])
+                tmp_p2 = grad_p2.norm() * grad_p2.norm()
+                w_p2 = 1 / mass[int(p2_index)]
+                grad_p3 = ti.Vector([grad_x3, grad_y3])
+                tmp_p3 = grad_p3.norm() * grad_p3.norm()
+                w_p3 = 1 / mass[int(p3_index)]
+                denominator = w_p1 * tmp_p1 + w_p2 * tmp_p2 + w_p3 * tmp_p3
+                constraint_lambda = diff_volumn / denominator
+                delta_p1 = -constraint_lambda * w_p1 * grad_p1 / volumn_constraint_num[int(p1_index)]
+                delta_p2 = -constraint_lambda * w_p2 * grad_p2 / volumn_constraint_num[int(p2_index)]
+                delta_p3 = -constraint_lambda * w_p3 * grad_p3 / volumn_constraint_num[int(p3_index)]
+                position_delta_tmp[int(p1_index)] += delta_p1
+                position_delta_tmp[int(p2_index)] += delta_p2
+                position_delta_tmp[int(p3_index)] += delta_p3
+            else:
+                grad_x1 = p21/2 - p31/2
+                grad_y1 = p30/2 - p20/2
+                grad_x2 = p31/2 - p11/2
+                grad_y2 = p10/2 - p30/2
+                grad_x3 = p11/2 - p21/2
+                grad_y3 = p20/2 - p10/2
+                grad_p1 = ti.Vector([grad_x1, grad_y1])
+                tmp_p1 = grad_p1.norm() * grad_p1.norm()
+                w_p1 = 1 / mass[int(p1_index)]
+                grad_p2 = ti.Vector([grad_x2, grad_y2])
+                tmp_p2 = grad_p2.norm() * grad_p2.norm()
+                w_p2 = 1 / mass[int(p2_index)]
+                grad_p3 = ti.Vector([grad_x3, grad_y3])
+                tmp_p3 = grad_p3.norm() * grad_p3.norm()
+                w_p3 = 1 / mass[int(p3_index)]
+                denominator = w_p1 * tmp_p1 + w_p2 * tmp_p2 + w_p3 * tmp_p3
+                constraint_lambda = diff_volumn / denominator
+                delta_p1 = -constraint_lambda * w_p1 * grad_p1 / volumn_constraint_num[int(p1_index)]
+                delta_p2 = -constraint_lambda * w_p2 * grad_p2 / volumn_constraint_num[int(p2_index)]
+                delta_p3 = -constraint_lambda * w_p3 * grad_p3 / volumn_constraint_num[int(p3_index)]
+                position_delta_tmp[int(p1_index)] += delta_p1
+                position_delta_tmp[int(p2_index)] += delta_p2
+                position_delta_tmp[int(p3_index)] += delta_p3
 
 @ti.kernel
 def apply_position_deltas(n: ti.i32):
@@ -144,6 +247,10 @@ def updata_velosity(n: ti.i32): #updata velosity after combining constraints
 @ti.kernel
 def new_particle(pos_x: ti.f32, pos_y: ti.f32, type: ti.i32): # Taichi doesn't support using Matrices as kernel arguments yet
     actuation_type[num_particles[None]] = type
+    if type == -1:
+        mass[num_particles[None]] = 100000000
+    else:
+        mass[num_particles[None]] = 1
     new_particle_id = num_particles[None]
     x[new_particle_id] = [pos_x, pos_y]
     v[new_particle_id] = [0, 0]
@@ -156,27 +263,66 @@ def new_costraint(p1_index: ti.i32, p2_index: ti.i32, dist: ti.f32):
     rest_length[p2_index, p1_index] = dist
 
 @ti.kernel
+def new_trian(p1_index: ti.i32, p2_index: ti.i32, p3_index: ti.i32):
+    new_trian_id = num_trian[None]
+    trian_volumn[new_trian_id, 0] = float(p1_index)
+    trian_volumn[new_trian_id, 1] = float(p2_index)
+    trian_volumn[new_trian_id, 2] = float(p3_index)
+    p1 = x[p1_index]
+    p2 = x[p2_index]
+    p3 = x[p3_index]
+    p10 = p1.x
+    p11 = p1.y
+    p20 = p2.x
+    p21 = p2.y
+    p30 = p3.x
+    p31 = p3.y
+    area = 0.5 * abs((p10 - p20)*(p11 - p31) - (p11 - p21)*(p10 - p30))
+    trian_volumn[new_trian_id, 3] = area
+    num_trian[None] += 1
+
+@ti.kernel
+def Compute_area(p1_index: ti.i32, p2_index: ti.i32, p3_index: ti.i32, new_trian_id: ti.i32):
+    trian_volumn[new_trian_id, 0] = float(p1_index)
+    trian_volumn[new_trian_id, 1] = float(p2_index)
+    trian_volumn[new_trian_id, 2] = float(p3_index)
+    p1 = x[p1_index]
+    p2 = x[p2_index]
+    p3 = x[p3_index]
+    p10 = p1.x
+    p11 = p1.y
+    p20 = p2.x
+    p21 = p2.y
+    p30 = p3.x
+    p31 = p3.y
+    area = 0.5 * abs((p10 - p20)*(p11 - p31) - (p11 - p21)*(p10 - p30))
+    triangle_area[new_trian_id] = area
+
+@ti.kernel
 def move_obstacle(n: ti.i32, delta_x: ti.f32, delta_y: ti.f32):
     for i in range(n):
         x[i].x += delta_x
         x[i].y += delta_y
 
-def forward(n):
+def forward(n, number_triangles):
     #the first three steps -> only consider external force
     old_posi(n)
     substep(n)
     Position_update(n)
     #print(x.to_numpy()[0:n] - old_x.to_numpy()[0:n])
-    collision_check(n)
+    # collision_check(n)
     #print(x.to_numpy()[0:n])
     #add constraints
     for i in range(pbd_num_iters):
         constraint_neighbors.fill(-1)
         find_constraint(n)
+        volumn_constraint_num.fill(0)
+        find_area_constraint(number_triangles)
         #print("This is ", i , "th iteration.")
         stretch_constraint(n)
+        area_constraint(number_triangles)
         apply_position_deltas(n)
-        collision_check(n)
+        # collision_check(n)
     updata_velosity(n)
 
 gui = ti.GUI('Mass Spring System', res=(640, 640), background_color=0xdddddd)
@@ -336,7 +482,10 @@ def Set_Stiffness():
     while True:
         try:
             tmpstiff = float(input("stiffness:"))
-            break
+            if abs(tmpstiff) <= 1 and tmpstiff > 0:
+                break
+            else:
+                print("Stiffness should be smaller than 1 and strictly bigger than 0")
         except ValueError:
             print("That was no valid number.  Try again...")
     stiffness[None] = tmpstiff
@@ -570,10 +719,9 @@ def tria2Energy(constraints, X):
     return new_constraints
 
 
-def ComputerEnergyConstant(X, rest_X):
+def ComputerEnergyConstant(NumberParticle, rest_X):
     NumberConstraints = len(rest_X)
-    NumberParticle = len(X)
-    K = 1 * np.eye(NumberConstraints)
+    K = stiffness[None] * np.eye(NumberConstraints)
     M = np.zeros([NumberParticle, NumberConstraints])
     d = np.zeros([NumberConstraints, 2])
     for i in range(NumberConstraints):
@@ -584,10 +732,10 @@ def ComputerEnergyConstant(X, rest_X):
         d[i][0] = rest_X[i][2]
         d[i][1] = rest_X[i][3]
     s = np.eye(NumberConstraints)
+    N = M @ K @ s.T
     s = s @ K @ s.T
     constant = 0.5 * np.trace(d.T @ s @ d)
     M_ = M @ K @ M.T
-    N = M @ K @ s.T
     N = N @ d
     return M_, N, constant
 
@@ -596,7 +744,7 @@ def ComputerEnergy(M, N, constant, X):
 
 
 
-stiffness[None] = 0.7 #adjustable
+stiffness[None] = 0.2 #adjustable
 damping[None] = 8 #8 is the most suitable
 LidarMaxDistance[None] = 0.1 #default
 
@@ -618,6 +766,7 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir):
         constraints.append([int(odom[1]) - offset, int(odom[2])- offset, int(odom[3]) - offset])
 
     num_particles[None] = 0
+    num_trian[None] = 0
     FixedPointsLists = []
     for i in points:
         if i[1] >= 0.023 and i[1] <= 0.026:
@@ -631,12 +780,11 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir):
     n = num_particles[None]
     X = x.to_numpy()[:n]
     Bottom_constraints = tria2Energy(constraints, X)
-    Bottom_M, Bottom_N, Bottom_constannt = ComputerEnergyConstant(X, Bottom_constraints)  #Energy constants
     Number_bottom_points = len(points)
+    Bottom_M, Bottom_N, Bottom_constannt = ComputerEnergyConstant(Number_bottom_points, Bottom_constraints)  #Energy constants
     Bottom_points = points.copy()
 
     #Read all mesh points from node/ele files  Upper part
-    Upper_constraints = []
     with open(Upper_dir + 'Upper.1.node', 'r') as f:
             data = f.readlines()
     for line in data[1: len(data) - 1]:
@@ -665,8 +813,18 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir):
     X = x.to_numpy()[:n]
     X_upper = x.to_numpy()[Number_bottom_points:n]
     Upper_constraints = tria2Energy(Upper_constraints, X_upper)
-    Upper_M, Upper_N, Upper_constannt = ComputerEnergyConstant(X_upper, Upper_constraints)  #Energy constants
+    Upper_M, Upper_N, Upper_constannt = ComputerEnergyConstant(Number_upper_points, Upper_constraints)  #Energy constants
     new_constraints = tria2constraint(constraints, X)
+
+    for triangle_vertices in constraints:
+        new_trian(triangle_vertices[0], triangle_vertices[1], triangle_vertices[2])
+    number_tri = num_trian[None]
+    volumn_start = trian_volumn.to_numpy()[:number_tri]
+    volumn_sum = 0
+    for i in range(number_tri):
+        volumn_sum += volumn_start[i, 3]
+    print("Initial area is: ", volumn_sum)
+
     tri_matrix = np.zeros((n,n))
     for i in new_constraints:
         new_costraint(int(i[0]), int(i[1]), float(i[2]))
@@ -692,11 +850,11 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir):
     # System Setup
     index = 0
     omega = 0.4 #unit:degree
-    speed = 0.002 #normalized between [0,1]
+    speed = 0.001 #normalized between [0,1]
     initial_angle = 0
     tolerance = 0.03 #stick and obstacle
-    scale = 2  #response intensity
-    length = 0.5 #fixed or adjustable
+    scale = 1  #response intensity
+    length = 0.8 #fixed or adjustable
     width = 0.005 #fixed
     trans_x = 0.15 #initial postion
     trans_y = 0.5 #initial position
@@ -737,6 +895,8 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir):
                 if(Module_index == Module['stiffness']):
                     print("Set stiffness")
                     Set_Stiffness()
+                    Bottom_M, Bottom_N, Bottom_constannt = ComputerEnergyConstant(Number_bottom_points, Bottom_constraints)  #Energy constants
+                    Upper_M, Upper_N, Upper_constannt = ComputerEnergyConstant(Number_upper_points, Upper_constraints)  #Energy constants
                 if(Module_index == Module['LidarSwitch']):
                     print("Lidar Switch on")
                     Set_lidar(trans_x, trans_y, initial_angle, length, stick_corners, n, connection_matrix, tri_mesh)
@@ -775,7 +935,7 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir):
             refresh_EndEffector=0
         for step in range(1):
             if not Pause:
-                forward(n)
+                forward(n, number_tri)
             else:  #compute energy
                 X=x.to_numpy()[:n]
                 while True:
@@ -792,7 +952,6 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir):
                         for j in connection_matrix[i]:
                             gui.line(begin=X[i], end=X[j], radius=2, color=0x445566)
                     gui.show()
-            
             X = x.to_numpy()[:n]
             X_bottom = X[:Number_bottom_points]
             X_upper = X[Number_bottom_points:n]
@@ -800,6 +959,15 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir):
             Energy_upper = ComputerEnergy(Upper_M, Upper_N, Upper_constannt, X_upper)
             print("Bottom energy:", Energy_bottom)
             print("Upper energy:", Energy_upper)
+            tri_index = 0
+            for triangle_vertices in constraints:
+                Compute_area(triangle_vertices[0], triangle_vertices[1], triangle_vertices[2], tri_index)
+                tri_index += 1
+            volumn_start = triangle_area.to_numpy()[:number_tri]
+            volumn_sum = 0
+            for i in range(number_tri):
+                volumn_sum += volumn_start[i]
+            print("Current area is: ", volumn_sum)
             OuterPoints = cv2.convexHull(X)
             verts = np.c_[X,np.zeros(n)]#fcl -> 3_D field
             if Motion_switch_on:
@@ -867,12 +1035,17 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir):
         actuation_type_tmp = np.ones((max_num_particles,),dtype=float)
         Delta_x_se = np.zeros((max_num_particles,),dtype=float)
         Delta_y_se = np.zeros((max_num_particles,),dtype=float)
+        han = 0
         for i in range(n):
             if i in FixedPointsLists:
                 actuation_type_tmp[i] = -1
             if collision == 1:  #interaction of the cylinder and mass
                 Collision_Enter = True
-                if X[i:i+1][0][0] == nearest_point[0] and X[i:i+1][0][1] == nearest_point[1]: #control point
+                distance_to_point = compute_distance(X[i:i+1][0], nearest_point)
+                # if X[i:i+1][0][0] == nearest_point[0] and X[i:i+1][0][1] == nearest_point[1]: #control point
+                region_raduis = 0.25
+                distance_scale = (region_raduis - distance_to_point) / region_raduis
+                if distance_scale >= 0: #control point
                     actuation_type_tmp[i] = 2
                     #direction is computed in two different ways:rotation or translation
                     if Motion_Index == 1: #rotation
@@ -883,8 +1056,8 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir):
                         direction = compute_PerpendicularDirection(angle, Motion_value)
                     # print("Dircettion:", direction)
                     #print("Distance:", delta) #move distance
-                    delta_x = scale * delta * direction[0] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
-                    delta_y = scale * delta * direction[1] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
+                    delta_x = scale * distance_scale * delta * direction[0] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
+                    delta_y = scale * distance_scale * delta * direction[1] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
                     Delta_x_se[i] = delta_x
                     Delta_y_se[i] = delta_y
                     # print("Delta_x", delta_x)
@@ -922,7 +1095,7 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir):
                 for j in connection_matrix[i]:
                     gui.line(begin=X[i], end=X[j], radius=2, color=0x445566)
 
-        gui.text(content=f'C: clear all; Space: pause', pos=(0, 0.95), color=0x0)
+        # gui.text(content=f'C: clear all; Space: pause', pos=(0, 0.95), color=0x0)
         gui.show()
 
 if __name__ == '__main__':
