@@ -437,7 +437,7 @@ def Set_Motion():
             break
         except ValueError:
             print("That was no valid number.  Try again...")
-    if motion_mode == 0: #Translation
+    if motion_mode == 0: #Translation(along the stick)
         while True:
             try:
                 Motion_distance = float(input("Enter the motion distance:"))
@@ -453,6 +453,14 @@ def Set_Motion():
             except ValueError:
                 print("That was no valid number.  Try again...")
         return motion_mode, Motion_angle, True
+    elif motion_mode == 2: #Translation(perpendicular to the stick)
+        while True:
+            try:
+                Motion_distance = float(input("Enter the motion distance:"))
+                break
+            except ValueError:
+                print("That was no valid number.  Try again...")
+        return motion_mode, Motion_distance, True
     else:
         print("Invalid Input")
         return -1, -1, False
@@ -531,19 +539,27 @@ def compute_Translationdirection(angle, motion_value):
         direction = [-np.cos(angle/180*np.pi), -np.sin(angle/180*np.pi)]
         return direction
 
-stiffness[None] = 0.05 #adjustable
+def compute_PerpendicularDirection(angle, motion_value):
+    if motion_value >= 0:
+        direction = [np.cos((angle+90)/180*np.pi), np.sin((angle+90)/180*np.pi)]
+        return direction
+    else:
+        direction = [np.cos((angle-90)/180*np.pi), np.sin((angle-90)/180*np.pi)]
+        return direction
+
+stiffness[None] = 0.4 #adjustable
 damping[None] = 8 #8 is the most suitable
 LidarMaxDistance[None] = 0.1
 def main(Contour_or_Mesh):
     #Read all mesh points from txt.file
     points = []
-    with open('./Contour_points/vertex.txt', 'r') as f:
+    with open('./Contour_points/Kidney/vertex.txt', 'r') as f:
         data = f.readlines()
     for line in data:
         odom = line.split()
         points.append([float(odom[0]), float(odom[1])])
     constraints = []
-    with open('./Contour_points/constraint.txt', 'r') as f:
+    with open('./Contour_points/Kidney/constraint.txt', 'r') as f:
         data = f.readlines()
     for line in data:
         odom = line.split()
@@ -575,10 +591,10 @@ def main(Contour_or_Mesh):
     single_particle_list = check_single_particle()
     index = 0
     omega = 0.4 #unit:degree
-    speed = 0.001 #normalized between [0,1]
+    speed = 0.0002 #normalized between [0,1]
     initial_angle = 0
-    tolerance = 0.02 #stick and obstacle
-    scale = 1  #response intensity
+    tolerance = 0.01 #stick and obstacle
+    scale = 2  #response intensity
     length = 0.5 #fixed or adjustable
     width = 0.005 #fixed
     trans_x = 0.15 #initial postion
@@ -591,12 +607,14 @@ def main(Contour_or_Mesh):
     Motion_Index = -1
     Motion_value = -1
     FixedPointsLists = []
+    Pause = False
+    Collision_Enter = False
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
     bottom_right = np.array([length / 2, -width / 2, 0])
     rotate_direction = 'counter-clock-wise' #or 'clock-wise'
-    Module = {'EndEffector':0, 'Extension':1 ,'Obstacles':2, 'stiffness':3, 'LidarSwitch':4, 'LidarMaxDistance':5,'FixedPoints':6, 'Motion':7, 'Length': 8} #Mode
+    Module = {'EndEffector':0, 'Extension':1 ,'Obstacles':2, 'stiffness':3, 'LidarSwitch':4, 'LidarMaxDistance':5,'FixedPoints':6, 'Motion':7, 'Length': 8, 'FxiedPointsRemove': 9} #Mode
     while True:
         for e in gui.get_events(ti.GUI.PRESS):
             if e.key == gui.SPACE and not Motion_switch_on:
@@ -625,7 +643,7 @@ def main(Contour_or_Mesh):
                     FixedPointsLists = Set_FixedPoints(stick_corners, n, connection_matrix)
                 if(Module_index == Module['Motion']):
                     print("Motion command:")
-                    print("Tranalation:0, Rotation:1")
+                    print("Tranalation(along orientation):0, Rotation:1, Tranalation(perpendicular to orientation):2")
                     Motion_Index, Motion_value, Motion_switch_on = Set_Motion() #motion_index: 0 -> Translation 1-> Rotation
                 if(Module_index == Module['Length']):
                     print("Set Length")
@@ -634,6 +652,9 @@ def main(Contour_or_Mesh):
                     top_right = np.array([length / 2, width / 2, 0])
                     bottom_left = np.array([-length / 2, -width / 2, 0])
                     bottom_right = np.array([length / 2, -width / 2, 0])
+                if(Motion_Index == Module['FxiedPointsRemove']):
+                    print("Remove fixed points")
+                    FixedPointsLists = []
             # elif e.key == ti.GUI.LMB:
             #     print(e.pos[0], e.pos[1])
         collision = -10
@@ -644,7 +665,26 @@ def main(Contour_or_Mesh):
             initial_angle=tmp_initial_angle
             refresh_EndEffector=0
         for step in range(1):
-            forward(n)
+            if not Pause:
+                forward(n)
+            else:  #compute energy
+                X=x.to_numpy()[:n]
+                while True:
+                        #Rotation collision and translation collision should use different strategies
+                    gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
+                    gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
+                    gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
+                    gui.line(begin=stick_corners[3],end=stick_corners[0],color=0x0, radius=1)
+                    for i in range(n):
+                        if i not in single_particle_list:
+                            if i in FixedPointsLists:
+                                gui.circles(X[i:i+1], color=0xffaa77, radius=6)
+                            else:
+                                gui.circles(X[i:i+1], color=0xffaa77, radius=3)
+                            for j in connection_matrix[i]:
+                                gui.line(begin=X[i], end=X[j], radius=2, color=0x445566)
+                    gui.show()
+            
             X = x.to_numpy()[:n]
             OuterPoints = cv2.convexHull(X)
             verts = np.c_[X,np.zeros(n)]#fcl -> 3_D field
@@ -666,17 +706,46 @@ def main(Contour_or_Mesh):
                         else:
                             Motion_switch_on = False
                             index = 0
-                elif Motion_Index == 0: #Translation(angle remains the same)
-                    if speed*index <= abs(Motion_value):
-                        index += 1
-                        trans_x += speed * np.cos(angle/180*np.pi)
-                        trans_y += speed * np.sin(angle/180*np.pi)
+                elif Motion_Index == 0: #Translation along the orientation(angle remains the same)
+                    if Motion_value < 0:
+                        if speed*index <= abs(Motion_value):
+                            index += 1
+                            trans_x -= speed * np.cos(angle/180*np.pi)
+                            trans_y -= speed * np.sin(angle/180*np.pi)
+                        else:
+                            Motion_switch_on = False
+                            index = 0
                     else:
-                        Motion_switch_on = False
-                        index = 0
+                        if speed*index <= abs(Motion_value):
+                            index += 1
+                            trans_x += speed * np.cos(angle/180*np.pi)
+                            trans_y += speed * np.sin(angle/180*np.pi)
+                        else:
+                            Motion_switch_on = False
+                            index = 0
+                elif Motion_Index == 2: #Translation perpendicular to the orientation(angle remains the same)
+                    if Motion_value < 0:
+                        if speed*index <= abs(Motion_value):
+                            index += 1
+                            trans_x += speed * np.cos((angle-90)/180*np.pi)
+                            trans_y += speed * np.sin((angle-90)/180*np.pi)
+                        else:
+                            Motion_switch_on = False
+                            index = 0
+                    else:
+                        if speed*index <= abs(Motion_value):
+                            index += 1
+                            print(angle+90)
+                            trans_x += speed * np.cos(angle+90/180*np.pi)
+                            trans_y += speed * np.sin(angle+90/180*np.pi)
+                        else:
+                            Motion_switch_on = False
+                            index = 0
             angle = initial_angle
             transform_matrix, stick_corners, stick = stick_configuration(angle, trans_x, trans_y, length, width, top_left, top_right, bottom_left, bottom_right)
             nearest_point, collision, delta = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, trans_x, trans_y, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
+            if collision == -1 and Collision_Enter:
+                Pause = True
             #Rotation collision and translation collision should use different strategies
         gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
         gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
@@ -690,14 +759,17 @@ def main(Contour_or_Mesh):
                 if i in FixedPointsLists:
                     actuation_type_tmp[i] = -1
                 if collision == 1:  #interaction of the cylinder and mass
+                    Collision_Enter = True
                     if X[i:i+1][0][0] == nearest_point[0] and X[i:i+1][0][1] == nearest_point[1]: #control point
                         actuation_type_tmp[i] = 2
                         #direction is computed in two different ways:rotation or translation
                         if Motion_Index == 1: #rotation
                             direction = compute_Rotationdirection(rotate_direction, transform_matrix, length, width, nearest_point)
-                        elif Motion_Index == 0: #translation
+                        elif Motion_Index == 0: #translation(along the orientation)
                             direction = compute_Translationdirection(angle, Motion_value)
-                        #print("Dircettion:", direction)
+                        elif Motion_Index == 2: #translation(perpendicular to the orientation)
+                            direction = compute_PerpendicularDirection(angle, Motion_value)
+                        # print("Dircettion:", direction)
                         #print("Distance:", delta) #move distance
                         delta_x = scale * delta * direction[0] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
                         delta_y = scale * delta * direction[1] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
@@ -732,7 +804,10 @@ def main(Contour_or_Mesh):
         if Contour_or_Mesh:
             for i in range(n):
                 if i not in single_particle_list:
-                    gui.circles(X[i:i+1], color=0xffaa77, radius=3)
+                    if i in FixedPointsLists:
+                        gui.circles(X[i:i+1], color=0xffaa77, radius=6)
+                    else:
+                        gui.circles(X[i:i+1], color=0xffaa77, radius=3)
                     for j in connection_matrix[i]:
                         gui.line(begin=X[i], end=X[j], radius=2, color=0x445566)
 
