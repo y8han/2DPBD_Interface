@@ -13,7 +13,6 @@ real = ti.f32 #data type f32 -> float in C
 max_num_particles = 1000
 dt = 1e-2#simulation time step(important) -> adjustable
 dt_inv = 1 / dt
-dx = 0.02
 dim = 2
 pbd_num_iters =30#Iteration number(important) -> adjustable
 max_triangle = 10000
@@ -29,6 +28,7 @@ stiffness = ti.var(ti.f32, shape=())
 LidarMaxDistance = ti.var(ti.f32, shape=())
 num_trian = ti.var(ti.i32, shape=())
 Area_parameter = ti.var(ti.f32, shape=())
+Momentum_Energy = ti.var(ti.f32, shape=())
 maximum_constraints = 50
 
 trian_volumn = scalar()
@@ -44,7 +44,7 @@ bottom_x = 1.00
 epsolon = 0.0001 #digit accurary(important) -> adjustable
 area_epsolon = 1e-11
 
-x, v, old_x = vec(), vec(), vec()
+x, v, old_x, star_x = vec(), vec(), vec(), vec()
 actuation_type = scalar()
 total_constraint = ti.var(ti.i32, shape=())
 # rest_length[i, j] = 0 means i and j are not connected
@@ -66,7 +66,7 @@ def place():
     ti.root.dense(ti.i, max_triangle).place(volumn_constraint_list)
     ti.root.dense(ti.ij, (max_triangle, 4)).place(trian_volumn)
     ti.root.dense(ti.i, max_triangle).place(triangle_area)
-    ti.root.dense(ti.i, max_num_particles).place(mass, volumn_constraint_num, x, v, old_x, actuation_type, position_delta_tmp, position_delta_sum, Delta_x_sequence, Delta_y_sequence) #initialzation to zero
+    ti.root.dense(ti.i, max_num_particles).place(mass, volumn_constraint_num, x, v, old_x, star_x, actuation_type, position_delta_tmp, position_delta_sum, Delta_x_sequence, Delta_y_sequence) #initialzation to zero
     nb_node = ti.root.dense(ti.i, max_num_particles)
     nb_node.place(constraint_num_neighbors)
     nb_node.dense(ti.j, maximum_constraints).place(constraint_neighbors)
@@ -75,6 +75,11 @@ def place():
 def old_posi(n: ti.i32):
     for i in range(n):
         old_x[i] = x[i]
+
+@ti.kernel
+def star_posi(n: ti.i32):
+    for i in range(n):
+        star_x[i] = x[i]
 
 @ti.kernel
 def find_constraint(n: ti.i32):
@@ -120,7 +125,7 @@ def substep(n: ti.i32): # Compute force and new velocity
         if actuation_type[i] == 1:
             v[i] *= ti.exp(-dt * damping[None]) # damping
             total_force = ti.Vector(gravity) * mass[i] #gravity -> accelaration
-            v[i] += dt * total_force / mass[i]
+            v[i] += dt * total_force / mass[i]  #dv = dt*a
         # if actuation_type[i] == 1:
         #     total_force = ti.Vector(H_force) * mass[i]
         if actuation_type[i] == 2: #control points by the cylinder
@@ -245,7 +250,7 @@ def new_particle(pos_x: ti.f32, pos_y: ti.f32, type: ti.i32): # Taichi doesn't s
     if type == -1:
         mass[num_particles[None]] = 100000000
     else:
-        mass[num_particles[None]] = 1
+        mass[num_particles[None]] = 0.0001
     new_particle_id = num_particles[None]
     x[new_particle_id] = [pos_x, pos_y]
     v[new_particle_id] = [0, 0]
@@ -304,6 +309,13 @@ def paint():
     for i, j, k in pixels:
         pixels[i, j, k] =  255
 
+@ti.kernel
+def Compute_Momentum_Energy(start: ti.i32, end: ti.i32):
+    for i in range(start, end):
+        if actuation_type[i] != -1:
+            Momentum_Energy[None] += 0.5 * mass[i] * (x[i] - star_x[i]).norm() * (x[i] - star_x[i]).norm()
+
+
 def forward(n, number_triangles):
     #the first three steps -> only consider external force
     old_posi(n)
@@ -311,6 +323,7 @@ def forward(n, number_triangles):
     Position_update(n)
     #print(x.to_numpy()[0:n] - old_x.to_numpy()[0:n])
     collision_check(n)
+    star_posi(n)
     #print(x.to_numpy()[0:n])
     #add constraints
     for i in range(pbd_num_iters):
@@ -756,40 +769,26 @@ def ComputerEnergyConstant(NumberParticle, rest_X):
     N = N @ d
     return M_, N, constant
 
-def ComputerEnergy(M, N, constant, X, triangle_current, triangle_rest):
-    Gravity_energy = 0
-    for i in range(X.shape[0]):
-        Gravity_energy += 1 * abs(Gravity) * 0.0001 * X[i][1]
+def ComputerEnergy(tissue, M, N, constant, X, triangle_current, triangle_rest, number_bottom, number_upper, n):
+    Momentum_Energy[None] = 0
+    if tissue == 'Bottom':
+        Compute_Momentum_Energy(0, number_bottom)
+    elif tissue == 'Upper':
+        Compute_Momentum_Energy(number_upper, n)
+    else:
+        print("Wrong")
     Area_energy = 0
     for i in range(triangle_current.shape[0]):
-        Area_energy += 0.5 * Area_parameter[None] * (triangle_current[i] - triangle_rest[i]) ** 2
-    Spring_energy = 0.5 * np.trace(X.T @ M @ X) - np.trace(X.T @ N) + constant
-    return Gravity_energy, Area_energy, Spring_energy, Area_energy + Gravity_energy + Spring_energy
+        Area_energy += dt ** 2 *0.5 * Area_parameter[None] * (triangle_current[i] - triangle_rest[i]) ** 2
+    Spring_energy = dt ** 2 * (0.5 * np.trace(X.T @ M @ X) - np.trace(X.T @ N) + constant)
+    return Area_energy + Spring_energy, Momentum_Energy[None], Momentum_Energy[None] + Area_energy + Spring_energy
 
-def output_file(file_name, G, A, S, All):
-    np.save(file_name + '_G.npy',G)
-    np.save(file_name + '_A.npy',A)
-    np.save(file_name + '_S.npy',S)
-    np.save(file_name + '_All.npy',All)
-    # file_name_G = file_name + '_G.txt'
-    # file_name_A = file_name + '_A.txt'
-    # file_name_S = file_name + '_S.txt'
-    # file_name_All = file_name + '_All.txt'
-    # f_G = open(file_name_G,'w')
-    # f_A = open(file_name_A,'w')
-    # f_S = open(file_name_S,'w')
-    # f_All = open(file_name_All,'w')
-    # for i in range(len(G)):
-    #     f_G.write(G[i])
-    #     f_A.write(A[i])
-    #     f_S.write(S[i])
-    #     f_All.write(All[i])
-    # f_G.close()
-    # f_A.close()
-    # f_S.close()
-    # f_All.close()
+def output_file(file_name, A, S, All):
+    np.save(file_name + '_Potential.npy',A)
+    np.save(file_name + '_Momentum.npy',S)
+    np.save(file_name + '_Implicit.npy',All)
 
-stiffness[None] = 0.2 #adjustable
+stiffness[None] = 0.15 #adjustable
 damping[None] = 8 #8 is the most suitable
 LidarMaxDistance[None] = 0.1 #default
 Area_parameter[None] = 1
@@ -913,8 +912,10 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
     Motion_switch_on = False
     Motion_Index = -1
     Motion_value = -1
+    Store = False
     Pause = False
     Collision_Enter = False
+    Draw_circle = False
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
@@ -922,17 +923,15 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
     scale_ratio = 0.7
     scale_offset = (1 - scale_ratio) / 2
     rotate_direction = 'counter-clock-wise' #or 'clock-wise'
-    Module = {'EndEffector':0, 'Extension':1 ,'Obstacles':2, 'stiffness':3, 'LidarSwitch':4, 'LidarMaxDistance':5,'FixedPoints':6, 'Motion':7, 'Length': 8, 'FxiedPointsRemove': 9} #Mode
+    Module = {'EndEffector':0, 'Extension':1 ,'Obstacles':2, 'stiffness':3, 'LidarSwitch':4, 'LidarMaxDistance':5,'FixedPoints':6, 'Motion':7, 'Length': 8, 'FxiedPointsRemove': 9, 'Fixed_circle': 10, 'Store': 11} #Mode
     filename = ''
     Image_store = False
-    Lists_bottom_gravity = []
-    Lists_bottom_area = []
-    Lists_bottom_spring = []
-    Lists_bottom_all = []
-    Lists_upper_gravity = []
-    Lists_upper_area = []
-    Lists_upper_spring = []
-    Lists_upper_all = []
+    Lists_bottom_potential = []
+    Lists_bottom_momentum = []
+    Lists_bottom_implicit = []
+    Lists_upper_potential = []
+    Lists_upper_momentum = []
+    Lists_upper_implicit= []
     # System Setup
     while True:
         for e in gui.get_events(ti.GUI.PRESS):
@@ -980,6 +979,14 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
                     top_right = np.array([length / 2, width / 2, 0])
                     bottom_left = np.array([-length / 2, -width / 2, 0])
                     bottom_right = np.array([length / 2, -width / 2, 0])
+                    asd
+                if(Module_index == Module['Fixed_circle']):
+                    Draw_circle = True
+                    Circle = stick_corners[2]
+                if(Module_index == Module['Store']):
+                    filename = f'final.png'   # create filename with suffix png
+                    filename = file_dir + filename
+                    Store = True
                 #disable
                 # if(Motion_Index == Module['FxiedPointsRemove']):
                 #     print("Remove fixed points")
@@ -1025,8 +1032,8 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
                             tmp_j[0] = tmp_j[0] * scale_ratio + scale_offset
                             gui.line(begin=tmp_i, end=tmp_j, radius=2, color=0x445566)
                     gui.show(filename)
-                    output_file(file_dir + 'Bottom', Lists_bottom_gravity, Lists_bottom_area, Lists_bottom_spring, Lists_bottom_all)
-                    output_file(file_dir + 'Upper', Lists_upper_gravity, Lists_upper_area, Lists_upper_spring, Lists_upper_all)
+                    output_file(file_dir + 'Bottom', Lists_bottom_potential, Lists_bottom_momentum, Lists_bottom_implicit)
+                    output_file(file_dir + 'Upper', Lists_upper_potential, Lists_upper_momentum, Lists_upper_implicit)
                     sys.exit(0)
             X = x.to_numpy()[:n]
             X_bottom = X[:Number_bottom_points]
@@ -1043,17 +1050,15 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
             # for i in range(number_tri):
             #     volumn_sum += volumn_start[i]
             # print("Current area is: ", volumn_sum)
-            Energy_bottom_G, Energy_bottom_A, Energy_bottom_S, Energy_bottom= ComputerEnergy(Bottom_M, Bottom_N, Bottom_constannt, X_bottom, Triangle_bottom, Rest_bottom)  #Spring + triangle + gravity
-            Energy_upper_G, Energy_upper_A, Energy_upper_S, Energy_upper = ComputerEnergy(Upper_M, Upper_N, Upper_constannt, X_upper, Triangle_upper, Rest_upper) #Spring + triangle + gravity
+            PotentialEnergy_bottom, MomentumEnergy_bottom, ImplitEnergy_bottom = ComputerEnergy('Bottom', Bottom_M, Bottom_N, Bottom_constannt, X_bottom, Triangle_bottom, Rest_bottom, Number_bottom_points, Number_upper_points, n)  #Spring + triangle + gravity
+            PotentialEnergy_upper, MomentumEnergy_upper, ImplitEnergy_upper = ComputerEnergy('Upper', Upper_M, Upper_N, Upper_constannt, X_upper, Triangle_upper, Rest_upper, Number_bottom_points, Number_upper_points, n) #Spring + triangle + gravity
             if Motion_switch_on: #Store the energy data
-                Lists_bottom_gravity.append(Energy_bottom_G)
-                Lists_bottom_area.append(Energy_bottom_A)
-                Lists_bottom_spring.append(Energy_bottom_S)
-                Lists_bottom_all.append(Energy_bottom)
-                Lists_upper_gravity.append(Energy_upper_G)
-                Lists_upper_area.append(Energy_upper_A)
-                Lists_upper_spring.append(Energy_upper_S)
-                Lists_upper_all.append(Energy_upper)
+                Lists_bottom_potential.append(PotentialEnergy_bottom)
+                Lists_bottom_momentum.append(MomentumEnergy_bottom)
+                Lists_bottom_implicit.append(ImplitEnergy_bottom)
+                Lists_upper_potential.append(PotentialEnergy_upper)
+                Lists_upper_momentum.append(MomentumEnergy_upper)
+                Lists_upper_implicit.append(ImplitEnergy_upper)
                 # print("Bottom energy:", Energy_bottom)
             # print("Upper energy:", Energy_upper)
             OuterPoints = cv2.convexHull(X)
@@ -1212,9 +1217,19 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
                     tmp_j = X[j].copy()
                     tmp_j[0] = tmp_j[0] * scale_ratio + scale_offset
                     gui.line(begin=tmp_i, end=tmp_j, radius=2, color=0x445566)
+            if Draw_circle:
+                tmp = X[0:1].copy()
+                tmp[0][0] = Circle[0]
+                tmp[0][1] = Circle[1]
+                gui.circles(tmp, color=0xffaa77, radius=10)
         # gui.text(content=f'C: clear all; Space: pause', pos=(0, 0.95), color=0x0)
         if Motion_switch_on and Image_store:
             gui.show(filename)
+        elif Store:
+            gui.show(filename)
+            output_file(file_dir + 'Bottom', Lists_bottom_potential, Lists_bottom_momentum, Lists_bottom_implicit)
+            output_file(file_dir + 'Upper', Lists_upper_potential, Lists_upper_momentum, Lists_upper_implicit)
+            sys.exit(0)
         else:
             gui.show()  # export and show in GUI
 
