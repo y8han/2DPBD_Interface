@@ -1258,7 +1258,9 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
                 PointP2_x[None] = stick_corners[3][0]
             # body = body_configuration(angle, newnew_trans_x, newnew_trans_y, length_tip, width)
             # nearest_point_body, collision_body, delta_body = BodyCheckCollison(rotate_direction, verts, tri_mesh, body, angle, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
-            nearest_point, collision, delta, nearest_point_id = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, trans_x, trans_y, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
+            # Very useful add: check whether they are on the same side (direction and tissue's collision point)
+            # deserve to have a try if time permit
+            nearest_point, collision, delta, nearest_point_id = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, trans_x, trans_y, tolerance) #argv1 & argv2 -> mesh argv3 -> stick 
             if collision == -1 and Collision_Enter:
                 Pause = True
             #Rotation collision and translation collision should use different strategies
