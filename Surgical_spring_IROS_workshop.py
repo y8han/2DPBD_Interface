@@ -3,7 +3,6 @@ import math as math
 import fcl
 import numpy as np
 import time
-import cv2
 import os
 import sys
 
@@ -29,6 +28,14 @@ LidarMaxDistance = ti.var(ti.f32, shape=())
 num_trian = ti.var(ti.i32, shape=())
 Area_parameter = ti.var(ti.f32, shape=())
 Momentum_Energy = ti.var(ti.f32, shape=())
+Line_function_A = ti.var(ti.f32,shape=())
+Line_function_B = ti.var(ti.f32,shape=())
+Line_function_C = ti.var(ti.f32,shape=())
+Line_function_D = ti.var(ti.f32,shape=())
+PointP1_x = ti.var(ti.f32,shape=())
+PointP2_x = ti.var(ti.f32,shape=())
+clearance = ti.var(ti.f32,shape=())
+test = ti.var(ti.f32,shape=())
 maximum_constraints = 50
 
 trian_volumn = scalar()
@@ -135,12 +142,23 @@ def substep(n: ti.i32): # Compute force and new velocity
 @ti.kernel
 def collision_check(n: ti.i32):# Collide with ground
     for i in range(n):
-        if x[i].y < bottom_y:
+        p_x = x[i].x
+        p_y = x[i].y
+        if p_y < bottom_y:
             x[i].y = bottom_y
             v[i].y = 0
-        if x[i].y > 1 - bottom_y:
+        if p_y > 1 - bottom_y:
             x[i].y = 1 - bottom_y
             v[i].y = 0
+        project_t = (-Line_function_C[None] - p_x * Line_function_A[None] - p_y * Line_function_B[None]) / Line_function_D[None] ** 2
+        project_x = p_x + project_t * Line_function_A[None]
+        project_y = p_y + project_t * Line_function_B[None]
+        if project_x >= PointP2_x[None] and project_x < PointP1_x[None]:
+            distance = np.abs(Line_function_A[None]*p_x+Line_function_B*p_y+Line_function_C[None])/Line_function_D[None]
+            if distance <= clearance[None]:
+                project_t = project_t / distance * (clearance[None] - distance)
+                x[i].x = p_x - project_t * Line_function_A[None]
+                x[i].y = p_y - project_t * Line_function_B[None]
 
 @ti.kernel
 def Position_update(n: ti.i32):# Compute new position
@@ -377,6 +395,10 @@ def CheckCollison(rotate_direction, verts, tris, stick, rota_degree, trans_x, tr
     #print("Is collision: ", cdata.result.is_collision)
     minimum_distance = ddata.result.min_distance
     nearest_point = ddata.result.nearest_points[0][:2]
+    nearest_point_id = -1
+    for i in range(verts.shape[0]):
+        if nearest_point[0] == verts[i][0] and nearest_point[1] == verts[i][1]:
+            nearest_point_id = i
     nearest_point_stick = ddata.result.nearest_points[1]
     nearest_point_stick = Transform(rota_degree, trans_x, trans_y, nearest_point_stick)
     collision = -10000
@@ -386,16 +408,16 @@ def CheckCollison(rotate_direction, verts, tris, stick, rota_degree, trans_x, tr
             print("The tip of the stick is inside the soft tissues.")
         elif minimum_distance >= tolerance:
             collision = 0
-            print("No collision")
+            print("Tip:No collision")
         # elif minimum_distance >= 0 and minimum_distance < tolerance and minimum_distance < previous_minimum_distance:
         elif minimum_distance >= 0 and minimum_distance < tolerance:
-            print("Collision")
+            print("Tip:Collision")
             collision = 1
         # if nearest_point in verts:
         #     print("nearest point of the stick:", nearest_point_stick)
     tmp = previous_minimum_distance
     previous_minimum_distance = minimum_distance
-    return nearest_point, collision, minimum_distance
+    return nearest_point, collision, minimum_distance, nearest_point_id
     #print(ddata.result.pos)
     # if cdata.result.is_collision:
     #     for contact in cdata.result.contacts:
@@ -403,6 +425,45 @@ def CheckCollison(rotate_direction, verts, tris, stick, rota_degree, trans_x, tr
     #         print(contact.pos in verts)
     #         print("Contact nor:", contact.normal)
     #         print("Penetra depth:", contact.penetration_depth)
+
+def BodyCheckCollison(rotate_direction, verts, tris, body, rota_degree, tolerance):
+    global previous_minimum_distance
+    mesh = fcl.BVHModel()
+    mesh.beginModel(len(verts), len(tris))
+    mesh.addSubModel(verts, tris)
+    mesh.endModel()
+    mesh_obj = fcl.CollisionObject(mesh)
+    objs = [mesh_obj, body]
+    manager = fcl.DynamicAABBTreeCollisionManager()
+    manager.registerObjects(objs)
+    manager.setup()
+    crequest = fcl.CollisionRequest(enable_contact=True)
+    drequest = fcl.DistanceRequest(enable_nearest_points=True)
+    cdata = fcl.CollisionData(crequest, fcl.CollisionResult())
+    ddata = fcl.DistanceData(drequest, fcl.DistanceResult())
+    manager.collide(cdata, fcl.defaultCollisionCallback)
+    manager.distance(ddata, fcl.defaultDistanceCallback)
+    minimum_distance = ddata.result.min_distance
+    nearest_point = ddata.result.nearest_points[0][:2]
+    collision = -10000
+    if previous_minimum_distance != -10000:
+        if minimum_distance == -1:
+            collision = -1
+            print("The body of the stick is inside the soft tissues.")
+        elif minimum_distance >= tolerance:
+            collision = 0
+            print("Body:No collision")
+        elif minimum_distance >= 0 and minimum_distance < tolerance and minimum_distance < previous_minimum_distance:
+        # elif minimum_distance >= 0 and minimum_distance < tolerance:
+            print("Body:Collision")
+            collision = 1
+        # if nearest_point in verts:
+        #     print("nearest point of the stick:", nearest_point_stick)
+    tmp = previous_minimum_distance
+    previous_minimum_distance = minimum_distance
+    return nearest_point, collision, minimum_distance
+
+
 
 def Transform(rota_degree, trans_x, trans_y, point):
     rotation = np.array([[np.cos(rota_degree/180*np.pi), -np.sin(rota_degree/180*np.pi), 0.0],
@@ -423,12 +484,13 @@ def lidar_configuration(trans_x, trans_y, radius):
     lidar = fcl.CollisionObject(fcl.Cylinder(radius, 0), Transform)
     return lidar
 
-def stick_configuration(rota_degree, trans_x, trans_y, length, width, top_left, top_right, bottom_left, bottom_right):
+def stick_configuration(rota_degree, trans_x, trans_y, new_trans_x, new_trans_y, length, width, top_left, top_right, bottom_left, bottom_right):
     rotation = np.array([[np.cos(rota_degree/180*np.pi), -np.sin(rota_degree/180*np.pi), 0.0],
                          [np.sin(rota_degree/180*np.pi), np.cos(rota_degree/180*np.pi), 0.0],
                          [0.0, 0.0, 1.0]])
     translation = np.array([trans_x, trans_y, 0.0])
-    Transform = fcl.Transform(rotation, translation)
+    new_translation = np.array([new_trans_x, new_trans_y, 0.0])
+    Transform = fcl.Transform(rotation, new_translation)
     #before transform
     stick = fcl.CollisionObject(fcl.Box(length, width, 0.0), Transform) #x,y,z length center at the origin
     #after transform
@@ -447,6 +509,17 @@ def stick_configuration(rota_degree, trans_x, trans_y, length, width, top_left, 
     bottom_right_trans = transform_matrix @ bottom_right_homo
     bottom_right_trans = bottom_right_trans[:2]
     return transform_matrix, [top_left_trans, top_right_trans, bottom_right_trans, bottom_left_trans], stick
+
+def body_configuration(rota_degree, new_trans_x, new_trans_y, length, width):
+    rotation = np.array([[np.cos(rota_degree/180*np.pi), -np.sin(rota_degree/180*np.pi), 0.0],
+                         [np.sin(rota_degree/180*np.pi), np.cos(rota_degree/180*np.pi), 0.0],
+                         [0.0, 0.0, 1.0]])
+    new_translation = np.array([new_trans_x, new_trans_y, 0.0])
+    Transform = fcl.Transform(rotation, new_translation)
+    #before transform
+    body = fcl.CollisionObject(fcl.Box(length, width, 0.0), Transform) #x,y,z length center at the origin
+    return body
+
 
 def compute_distance(p1, p2):
     return np.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
@@ -792,8 +865,9 @@ stiffness[None] = 0.15 #adjustable
 damping[None] = 8 #8 is the most suitable
 LidarMaxDistance[None] = 0.1 #default
 Area_parameter[None] = 1
+test[None] = 0
 
-def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
+def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
     offset = 1
     #Read all mesh points from node/ele files  Bottom part
     points = []
@@ -894,14 +968,19 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
                 tmp.append(j)
         connection_matrix.append(tmp) #spring connection
     tri_mesh = np.array(tri_mesh)
+    actuation_type_tmp_history = np.ones((max_num_particles,),dtype=float)
     # System Setup
     index = 0
     omega = 0.4 #unit:degree
     speed = 0.001 #normalized between [0,1]
     initial_angle = 0
-    tolerance = 0.03 #stick and obstacle
+    tolerance = 0.02 #stick and obstacle  0.025 for task2 0.03 for task1
+    clearance[None] = 0.01
     scale = 1  #response intensity
     length = 0.8 #fixed or adjustable
+    length_tip = 0.05
+    stick_offset = (length - length_tip) / 2
+    body_offset = length_tip / 2
     width = 0.005 #fixed
     trans_x = 0.15 #initial postion
     trans_y = 0.5 #initial position
@@ -916,6 +995,7 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
     Pause = False
     Collision_Enter = False
     Draw_circle = False
+
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
@@ -1032,9 +1112,9 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
                             tmp_j[0] = tmp_j[0] * scale_ratio + scale_offset
                             gui.line(begin=tmp_i, end=tmp_j, radius=2, color=0x445566)
                     gui.show(filename)
-                    output_file(file_dir + 'Bottom', Lists_bottom_potential, Lists_bottom_momentum, Lists_bottom_implicit)
-                    output_file(file_dir + 'Upper', Lists_upper_potential, Lists_upper_momentum, Lists_upper_implicit)
-                    sys.exit(0)
+                    # output_file(file_dir + 'Bottom', Lists_bottom_potential, Lists_bottom_momentum, Lists_bottom_implicit)
+                    # output_file(file_dir + 'Upper', Lists_upper_potential, Lists_upper_momentum, Lists_upper_implicit)
+                    # sys.exit(0)
             X = x.to_numpy()[:n]
             X_bottom = X[:Number_bottom_points]
             X_upper = X[Number_bottom_points:n]
@@ -1061,7 +1141,6 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
                 Lists_upper_implicit.append(ImplitEnergy_upper)
                 # print("Bottom energy:", Energy_bottom)
             # print("Upper energy:", Energy_upper)
-            OuterPoints = cv2.convexHull(X)
             verts = np.c_[X,np.zeros(n)]#fcl -> 3_D field
             if Motion_switch_on:
                 if Motion_Index == 1:   #Rotation
@@ -1087,6 +1166,15 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
                             index += 1
                             trans_x -= speed * np.cos(angle/180*np.pi)
                             trans_y -= speed * np.sin(angle/180*np.pi)
+                            if video_save:
+                                if index % interval == 0:
+                                    paint()
+                                    gui.set_image(pixels)
+                                    filename = f'frame_{index:05d}.png'   # create filename with suffix png
+                                    filename = file_dir + filename
+                                    Image_store = True
+                                else:
+                                    Image_store = False
                         else:
                             Motion_switch_on = False
                             index = 0
@@ -1095,6 +1183,15 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
                             index += 1
                             trans_x += speed * np.cos(angle/180*np.pi)
                             trans_y += speed * np.sin(angle/180*np.pi)
+                            if video_save:
+                                if index % interval == 0:
+                                    paint()
+                                    gui.set_image(pixels)
+                                    filename = f'frame_{index:05d}.png'   # create filename with suffix png
+                                    filename = file_dir + filename
+                                    Image_store = True
+                                else:
+                                    Image_store = False
                         else:
                             Motion_switch_on = False
                             index = 0
@@ -1104,36 +1201,64 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
                             index += 1
                             trans_x += speed * np.cos((angle-90)/180*np.pi)
                             trans_y += speed * np.sin((angle-90)/180*np.pi)
-                            if index % 10 == 0:
-                                paint()
-                                gui.set_image(pixels)
-                                filename = f'frame_{index:05d}.png'   # create filename with suffix png
-                                filename = file_dir + filename
-                                Image_store = True
-                            else:
-                                Image_store = False
+                            if video_save:
+                                if index % interval == 0:
+                                    paint()
+                                    gui.set_image(pixels)
+                                    filename = f'frame_{index:05d}.png'   # create filename with suffix png
+                                    filename = file_dir + filename
+                                    Image_store = True
+                                else:
+                                    Image_store = False
                         else:
                             Motion_switch_on = False
                             index = 0
                     else:
                         if speed*index <= abs(Motion_value):
                             index += 1
-                            trans_x += speed * np.cos(angle+90/180*np.pi)
-                            trans_y += speed * np.sin(angle+90/180*np.pi)
-                            if index % 10 == 0:
-                                paint()
-                                gui.set_image(pixels)
-                                filename = f'frame_{index:05d}.png'   # create filename with suffix png
-                                filename = file_dir + filename
-                                Image_store = True
-                            else:
-                                Image_store = False
+                            trans_x += speed * np.cos((angle+90)/180*np.pi)
+                            trans_y += speed * np.sin((angle+90)/180*np.pi)
+                            # trans_x += speed * np.cos(angle+90/180*np.pi)
+                            # trans_y += speed * np.sin(angle+90/180*np.pi) #original version, maybe something wrong
+                            if video_save:
+                                if index % interval == 0:
+                                    paint()
+                                    gui.set_image(pixels)
+                                    filename = f'frame_{index:05d}.png'   # create filename with suffix png
+                                    filename = file_dir + filename
+                                    Image_store = True
+                                else:
+                                    Image_store = False
                         else:
                             Motion_switch_on = False
                             index = 0
             angle = initial_angle
-            transform_matrix, stick_corners, stick = stick_configuration(angle, trans_x, trans_y, length, width, top_left, top_right, bottom_left, bottom_right)
-            nearest_point, collision, delta = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, trans_x, trans_y, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
+            new_trans_x = trans_x + stick_offset * np.cos(angle/180*np.pi)  #tip of stick
+            new_trans_y = trans_y + stick_offset * np.sin(angle/180*np.pi)  #tip of stick
+            # newnew_trans_x = trans_x - body_offset * np.cos(angle/180*np.pi)  #The left part of the stick
+            # newnew_trans_y = trans_y - body_offset * np.sin(angle/180*np.pi)
+            if Motion_Index == 0: #Tip actuation
+                transform_matrix, stick_corners, stick = stick_configuration(angle, trans_x, trans_y, new_trans_x, new_trans_y, length_tip, width, top_left, top_right, bottom_left, bottom_right)
+            else:
+                transform_matrix, stick_corners, stick = stick_configuration(angle, trans_x, trans_y, trans_x, trans_y, length, width, top_left, top_right, bottom_left, bottom_right)
+            # Which side is close to the tissue
+            # Line_function_A[None] = stick_corners[1][1] - stick_corners[0][1]
+            # Line_function_B[None] = stick_corners[0][0] - stick_corners[1][0]
+            # Line_function_C[None] = stick_corners[1][0]*stick_corners[0][1] - stick_corners[0][0]*stick_corners[1][1]
+            Line_function_A[None] = stick_corners[2][1] - stick_corners[3][1]
+            Line_function_B[None] = stick_corners[3][0] - stick_corners[2][0]
+            Line_function_C[None] = stick_corners[2][0]*stick_corners[3][1] - stick_corners[3][0]*stick_corners[2][1]
+            Line_function_D[None] = np.sqrt(Line_function_A[None]**2 + Line_function_B[None]**2)
+            # if stick_corners[0][0] >= stick_corners[1][0]:
+            if stick_corners[3][0] >= stick_corners[2][0]:
+                PointP1_x[None] = stick_corners[3][0]
+                PointP2_x[None] = stick_corners[2][0]
+            else:
+                PointP1_x[None] = stick_corners[2][0]
+                PointP2_x[None] = stick_corners[3][0]
+            # body = body_configuration(angle, newnew_trans_x, newnew_trans_y, length_tip, width)
+            # nearest_point_body, collision_body, delta_body = BodyCheckCollison(rotate_direction, verts, tri_mesh, body, angle, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
+            nearest_point, collision, delta, nearest_point_id = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, trans_x, trans_y, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
             if collision == -1 and Collision_Enter:
                 Pause = True
             #Rotation collision and translation collision should use different strategies
@@ -1148,18 +1273,23 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
         actuation_type_tmp = np.ones((max_num_particles,),dtype=float)
         Delta_x_se = np.zeros((max_num_particles,),dtype=float)
         Delta_y_se = np.zeros((max_num_particles,),dtype=float)
-        han = 0
         for i in range(n):
-            if i in FixedPointsLists:
-                actuation_type_tmp[i] = -1
             if collision == 1:  #interaction of the cylinder and mass
                 Collision_Enter = True
                 distance_to_point = compute_distance(X[i:i+1][0], nearest_point)
                 # if X[i:i+1][0][0] == nearest_point[0] and X[i:i+1][0][1] == nearest_point[1]: #control point
                 region_raduis = 0.25
                 distance_scale = (region_raduis - distance_to_point) / region_raduis
-                if distance_scale >= 0: #control point
+                Check = False
+                if nearest_point_id < Number_bottom_points: #bottom tissue
+                    if i < Number_bottom_points:
+                        Check = True
+                else: #upper tissue
+                    if i >= Number_bottom_points:
+                        Check = True
+                if distance_scale >= 0 and Check: #control point  0.6 0.45   based on the location of the actuated tissue
                     actuation_type_tmp[i] = 2
+                    actuation_type_tmp_history[i] = 2
                     #direction is computed in two different ways:rotation or translation
                     if Motion_Index == 1: #rotation
                         direction = compute_Rotationdirection(rotate_direction, transform_matrix, length, width, nearest_point)
@@ -1173,59 +1303,41 @@ def main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir):
                     delta_y = scale * distance_scale * delta * direction[1] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
                     Delta_x_se[i] = delta_x
                     Delta_y_se[i] = delta_y
-                    # print("Delta_x", delta_x)
-                    # print("Delta_y", delta_y)
-                    # while True:
-                    #     gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
-                    #     gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
-                    #     gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
-                    #     gui.line(begin=stick_corners[3],end=stick_corners[0],color=0x0, radius=1)
-                    #     X = x.to_numpy()[:n]
-                    #     for i in range(n):
-                    #         if X[i:i+1][0][0] == nearest_point[0] and X[i:i+1][0][1] == nearest_point[1]:
-                    #             gui.circles(X[i:i+1], color=0xffaa77, radius=10)
-                    #         else:
-                    #             gui.circles(X[i:i+1], color=0xffaa77, radius=3)
-                    #     gui.show()
-        if not Contour_or_Mesh:
-            for i in OuterPoints:
-                gui.circles(i, color=0xffaa77, radius=5)
-            for i in range(len(OuterPoints)):
-                if i!= len(OuterPoints) - 1:
-                    gui.line(begin=OuterPoints[i].squeeze(),end=OuterPoints[i+1].squeeze(),radius=2,color=0x445566)
-                else:
-                    gui.line(begin=OuterPoints[i].squeeze(),end=OuterPoints[0].squeeze(),radius=2,color=0x445566)
+            #one extra iteration
+            # elif collision == 0 and Collision_Enter:
+            #     actuation_type_tmp[i] = actuation_type_tmp_history[i]
+            #     Collision_Enter = False
+            if i in FixedPointsLists:
+                actuation_type_tmp[i] = -1
         actuation_type.from_numpy(actuation_type_tmp)
         Delta_x_sequence.from_numpy(Delta_x_se)
         Delta_y_sequence.from_numpy(Delta_y_se)
         gui.line(begin=(0.0, bottom_y), end=(1.0, bottom_y), color=0x0, radius=1)
         gui.line(begin=(0.0, 1-bottom_y-0.001), end=(1.0, 1-bottom_y-0.001), color=0x0, radius=1)
-
-        if Contour_or_Mesh:
-            for i in range(n):
-                if i in FixedPointsLists:
-                    tmp = X[i:i+1].copy()
-                    tmp[0][0] = tmp[0][0] * scale_ratio + scale_offset
-                    gui.circles(tmp, color=0xffaa77, radius=6)
-                else:
-                    tmp = X[i:i+1].copy()
-                    tmp[0][0] = tmp[0][0] * scale_ratio + scale_offset
-                    gui.circles(tmp, color=0xffaa77, radius=3)
-                for j in connection_matrix[i]:
-                    tmp_i = X[i].copy()
-                    tmp_i[0] = tmp_i[0] * scale_ratio + scale_offset
-                    tmp_j = X[j].copy()
-                    tmp_j[0] = tmp_j[0] * scale_ratio + scale_offset
-                    gui.line(begin=tmp_i, end=tmp_j, radius=2, color=0x445566)
-            if Draw_circle:
-                tmp = X[0:1].copy()
-                tmp[0][0] = Circle[0]
-                tmp[0][1] = Circle[1]
-                gui.circles(tmp, color=0xffaa77, radius=10)
+        for i in range(n):
+            if i in FixedPointsLists:
+                tmp = X[i:i+1].copy()
+                tmp[0][0] = tmp[0][0] * scale_ratio + scale_offset
+                gui.circles(tmp, color=0xffaa77, radius=6)
+            else:
+                tmp = X[i:i+1].copy()
+                tmp[0][0] = tmp[0][0] * scale_ratio + scale_offset
+                gui.circles(tmp, color=0xffaa77, radius=3)
+            for j in connection_matrix[i]:
+                tmp_i = X[i].copy()
+                tmp_i[0] = tmp_i[0] * scale_ratio + scale_offset
+                tmp_j = X[j].copy()
+                tmp_j[0] = tmp_j[0] * scale_ratio + scale_offset
+                gui.line(begin=tmp_i, end=tmp_j, radius=2, color=0x445566)
+        if Draw_circle:
+            tmp = X[0:1].copy()
+            tmp[0][0] = Circle[0]
+            tmp[0][1] = Circle[1]
+            gui.circles(tmp, color=0xffaa77, radius=10)
         # gui.text(content=f'C: clear all; Space: pause', pos=(0, 0.95), color=0x0)
         if Motion_switch_on and Image_store:
             gui.show(filename)
-        elif Store:
+        if Store:
             gui.show(filename)
             output_file(file_dir + 'Bottom', Lists_bottom_potential, Lists_bottom_momentum, Lists_bottom_implicit)
             output_file(file_dir + 'Upper', Lists_upper_potential, Lists_upper_momentum, Lists_upper_implicit)
@@ -1237,6 +1349,14 @@ if __name__ == '__main__':
     Bottom_dir = sys.argv[1]
     Upper_dir = sys.argv[2]
     file_dir = sys.argv[3]
-    Contour_or_Mesh = True #True -> Mesh False -> Contour    for better performance
-    main(Contour_or_Mesh, Bottom_dir, Upper_dir, file_dir)
+    interval = int(sys.argv[4])
+    if sys.argv[5] == "True":
+        video_save = True
+    elif sys.argv[5] == "False":
+        video_save = False
+    else:
+        print("Check parameters!")
+        sys.exit(0)
+    main(Bottom_dir, Upper_dir, file_dir, interval, video_save)
+
 
