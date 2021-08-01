@@ -133,8 +133,6 @@ def substep(n: ti.i32): # Compute force and new velocity
             v[i] *= ti.exp(-dt * damping[None]) # damping
             total_force = ti.Vector(gravity) * mass[i] #gravity -> accelaration
             v[i] += dt * total_force / mass[i]  #dv = dt*a
-        # if actuation_type[i] == 1:
-        #     total_force = ti.Vector(H_force) * mass[i]
         if actuation_type[i] == 2: #control points by the cylinder
             x[i].x += Delta_x_sequence[i]
             x[i].y += Delta_y_sequence[i]
@@ -150,9 +148,9 @@ def collision_check(n: ti.i32):# Collide with ground
         if p_y > 1 - bottom_y:
             x[i].y = 1 - bottom_y
             v[i].y = 0
+        # The cylinder is modelled as an obstacle
         project_t = (-Line_function_C[None] - p_x * Line_function_A[None] - p_y * Line_function_B[None]) / Line_function_D[None] ** 2
         project_x = p_x + project_t * Line_function_A[None]
-        project_y = p_y + project_t * Line_function_B[None]
         if project_x >= PointP2_x[None] and project_x < PointP1_x[None]:
             distance = np.abs(Line_function_A[None]*p_x+Line_function_B*p_y+Line_function_C[None])/Line_function_D[None]
             if distance <= clearance[None]:
@@ -399,8 +397,8 @@ def CheckCollison(rotate_direction, verts, tris, stick, rota_degree, trans_x, tr
     for i in range(verts.shape[0]):
         if nearest_point[0] == verts[i][0] and nearest_point[1] == verts[i][1]:
             nearest_point_id = i
-    nearest_point_stick = ddata.result.nearest_points[1]
-    nearest_point_stick = Transform(rota_degree, trans_x, trans_y, nearest_point_stick)
+    # nearest_point_stick = ddata.result.nearest_points[1]
+    # nearest_point_stick = Transform(rota_degree, trans_x, trans_y, nearest_point_stick)
     collision = -10000
     if previous_minimum_distance != -10000:
         if minimum_distance == -1:
@@ -418,6 +416,7 @@ def CheckCollison(rotate_direction, verts, tris, stick, rota_degree, trans_x, tr
     tmp = previous_minimum_distance
     previous_minimum_distance = minimum_distance
     return nearest_point, collision, minimum_distance, nearest_point_id
+
     #print(ddata.result.pos)
     # if cdata.result.is_collision:
     #     for contact in cdata.result.contacts:
@@ -545,7 +544,7 @@ def Set_EndEffector(length):  #Adjust the position and angle of the end Effector
             print("That was no valid number.  Try again...")
     p2 = p2 - length / 2 * np.sin(angle/180*np.pi)
     p1 = p1 - length / 2 * np.cos(angle/180*np.pi)
-    return p1,p2,angle,1
+    return p1,p2,angle
 
 def Set_Center(n):
     while True:
@@ -588,7 +587,7 @@ def Set_Module(module_dict):
             print("That was no valid number.  Try again...")
     return index
 
-def Set_lidar(tran_x, tran_y, angle, length,stick_corners,n, connection_matrix, tri_mesh, FixedPointsLists, scale_ratio, scale_offset):
+def Set_lidar(tran_x, tran_y, angle, length,stick_corners,n, connection_matrix, tri_mesh, FixedPointsLists, scale_ratio, scale_offset, Circle):
     while True:
         try:
             Lidar_number = int(input("Lidar number:"))
@@ -599,7 +598,7 @@ def Set_lidar(tran_x, tran_y, angle, length,stick_corners,n, connection_matrix, 
     Tip_y = tran_y + length / 2 * np.sin(angle/180*np.pi)
     Lidar_angle = angle + 90
     angle_lists = np.linspace(Lidar_angle, Lidar_angle - 180, num=Lidar_number)
-    distance_lists = np.linspace(0, LidarMaxDistance[None], num=int(LidarMaxDistance[None]/0.01)) #steps
+    distance_lists = np.linspace(0, LidarMaxDistance[None], num=int(LidarMaxDistance[None]/0.01)) #steps accuracy: 0.01
     X=x.to_numpy()[:n]
     verts = np.c_[X,np.zeros(n)]#fcl -> 3_D field
     contact_lists = {}
@@ -608,6 +607,10 @@ def Set_lidar(tran_x, tran_y, angle, length,stick_corners,n, connection_matrix, 
         stick_corners[1][0] = stick_corners[1][0] * scale_ratio + scale_offset
         stick_corners[2][0] = stick_corners[2][0] * scale_ratio + scale_offset
         stick_corners[3][0] = stick_corners[3][0] * scale_ratio + scale_offset
+        paint()
+        gui.set_image(pixels)
+        gui.line(begin=(0.0, bottom_y), end=(1.0, bottom_y), color=0x0, radius=1)
+        gui.line(begin=(0.0, 1 - bottom_y - 0.001), end=(1.0, 1 - bottom_y - 0.001), color=0x0, radius=1)
         gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
         gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
         gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
@@ -629,22 +632,26 @@ def Set_lidar(tran_x, tran_y, angle, length,stick_corners,n, connection_matrix, 
                 gui.line(begin=tmp_i, end=tmp_j, radius=2, color=0x445566)
         for Li_angle in angle_lists:
             tmp = -1
-            if contact_lists.get(Li_angle, -1) != -1:
+            if contact_lists.get(Li_angle, -1) != -1:  # check if each Lidar point collide with the environment
                 tmp = Li_distance
                 Li_distance = contact_lists.get(Li_angle)
             pos_x = Tip_x - Li_distance * (-np.cos(Li_angle/180*np.pi))
             pos_y = Tip_y + Li_distance * (np.sin(Li_angle/180*np.pi))
-            lidar = lidar_configuration(pos_x, pos_y, 0.001) #radius -> 0.02
+            lidar = lidar_configuration(pos_x, pos_y, radius = 0.001) # model a Lidar point as a circle with a set radius (return a fcl object)
             minimum_distance = checkLidarCollistion(lidar, verts, tri_mesh)
             if minimum_distance == -1: #lidar contact the obstacle
                 contact_lists[Li_angle] = Li_distance
-            if tmp != -1:
+            if tmp != -1: #reset the Li_distance for other Lidar_points
                 Li_distance = tmp
             gui.circles(np.array([[pos_x, pos_y]]), color=0xffaa77, radius=5) #draw circles
+        if Circle is not None:
+            gui.circles(Circle, color=0xffaa77, radius=10)
         gui.show()
         time.sleep(0.5)
     print(contact_lists)
+    return contact_lists
 
+# verts -> vertices position; tris -> vertices mesh structure
 def checkLidarCollistion(lidar, verts, tris):
     mesh = fcl.BVHModel()
     mesh.beginModel(len(verts), len(tris))
@@ -708,28 +715,95 @@ def Set_Motion():
         print("Invalid Input")
         return -1, -1, False
 
-def Set_FixedPoints(stick_corners,n, connection_matrix):
+def Set_FixedPoints(stick_corners,n, connection_matrix, FixedPointsLists, Circle):
     FixedPoints = []
     ContinueSelect = True
+    X = x.to_numpy()[:n]
     while ContinueSelect:
-        X=x.to_numpy()[:n]
         for e in gui.get_events(ti.GUI.PRESS):
             if e.key == ti.GUI.LMB:
                 SelectedPoint = Find_ClosePoints(e.pos[0], e.pos[1], X, n)
                 FixedPoints.append(SelectedPoint)
-                print(X[SelectedPoint])  #selected points are fixed
             if e.key in [ti.GUI.ESCAPE, ti.GUI.EXIT]:
                 ContinueSelect = False
+        paint()
+        gui.set_image(pixels)
+        gui.line(begin=(0.0, bottom_y), end=(1.0, bottom_y), color=0x0, radius=1)
+        gui.line(begin=(0.0, 1 - bottom_y - 0.001), end=(1.0, 1 - bottom_y - 0.001), color=0x0, radius=1)
         gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
         gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
         gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
         gui.line(begin=stick_corners[3],end=stick_corners[0],color=0x0, radius=1)
         for i in range(n):
-            gui.circles(X[i:i+1], color=0xffaa77, radius=3)
+            if i in FixedPointsLists or i in FixedPoints:
+                gui.circles(X[i:i + 1], color=0xffaa77, radius=6)
+            else:
+                gui.circles(X[i:i+1], color=0xffaa77, radius=3)
+            for j in connection_matrix[i]:
+                gui.line(begin=X[i], end=X[j], radius=2, color=0x445566)
+        if Circle is not None:
+            gui.circles(Circle, color=0xffaa77, radius=10)
+        gui.show()
+    return FixedPoints
+
+def Set_circle(stick_corners,n, connection_matrix, FixedPointsLists):
+    ContinueSelect = True
+    circle = np.ones([1,2])
+    X = x.to_numpy()[:n]
+    while ContinueSelect:
+        for e in gui.get_events(ti.GUI.PRESS):
+            if e.key == ti.GUI.LMB:
+                circle[0][0] = e.pos[0]
+                circle[0][1] = e.pos[1]
+                ContinueSelect = False
+        paint()
+        gui.set_image(pixels)
+        gui.line(begin=(0.0, bottom_y), end=(1.0, bottom_y), color=0x0, radius=1)
+        gui.line(begin=(0.0, 1 - bottom_y - 0.001), end=(1.0, 1 - bottom_y - 0.001), color=0x0, radius=1)
+        gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
+        gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
+        gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
+        gui.line(begin=stick_corners[3],end=stick_corners[0],color=0x0, radius=1)
+        for i in range(n):
+            if i in FixedPointsLists:
+                gui.circles(X[i:i + 1], color=0xffaa77, radius=6)
+            else:
+                gui.circles(X[i:i+1], color=0xffaa77, radius=3)
             for j in connection_matrix[i]:
                 gui.line(begin=X[i], end=X[j], radius=2, color=0x445566)
         gui.show()
-    return FixedPoints
+    return circle
+
+def Remove_FixedPoints(stick_corners,n, connection_matrix, FixedPointsLists, Circle):
+    RemovedPoints = []
+    ContinueSelect = True
+    X = x.to_numpy()[:n]
+    while ContinueSelect:
+        for e in gui.get_events(ti.GUI.PRESS):
+            if e.key == ti.GUI.LMB:
+                SelectedPoint = Find_ClosePoints(e.pos[0], e.pos[1], X, n)
+                RemovedPoints.append(SelectedPoint)
+            if e.key in [ti.GUI.ESCAPE, ti.GUI.EXIT]:
+                ContinueSelect = False
+        paint()
+        gui.set_image(pixels)
+        gui.line(begin=(0.0, bottom_y), end=(1.0, bottom_y), color=0x0, radius=1)
+        gui.line(begin=(0.0, 1 - bottom_y - 0.001), end=(1.0, 1 - bottom_y - 0.001), color=0x0, radius=1)
+        gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
+        gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
+        gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
+        gui.line(begin=stick_corners[3],end=stick_corners[0],color=0x0, radius=1)
+        for i in range(n):
+            if i in FixedPointsLists and i not in RemovedPoints:
+                gui.circles(X[i:i + 1], color=0xffaa77, radius=6)
+            else:
+                gui.circles(X[i:i + 1], color=0xffaa77, radius=3)
+            for j in connection_matrix[i]:
+                gui.line(begin=X[i], end=X[j], radius=2, color=0x445566)
+        if Circle is not None:
+            gui.circles(Circle, color=0xffaa77, radius=10)
+        gui.show()
+    return RemovedPoints
 
 def Find_ClosePoints(p1_x, p1_y, X, n):
     min_distance = 10000
@@ -790,6 +864,7 @@ def compute_PerpendicularDirection(angle, motion_value):
         direction = [np.cos((angle-90)/180*np.pi), np.sin((angle-90)/180*np.pi)]
         return direction
 
+### Function: Convert each tri relation into three spring constraints
 def tria2constraint(constraints, X):
     new_constraints = []
     for i in constraints:
@@ -887,6 +962,7 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
     num_particles[None] = 0
     num_trian[None] = 0
     FixedPointsLists = []
+    # Set the initial fixed points based on the y-value
     for i in points:
         if i[1] >= 0.023 and i[1] <= 0.026:
             FixedPointsLists.append(points.index(i))
@@ -896,12 +972,13 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
             new_particle(i[0], i[1], -1)
         else:
             new_particle(i[0], i[1], 1)
+
     n = num_particles[None]
     X = x.to_numpy()[:n]
-    Bottom_constraints = tria2Energy(constraints, X)
+    Bottom_constraints_energy = tria2Energy(constraints, X)
     Number_bottom_points = len(points)
     Number_bottom_triangle = len(constraints)
-    Bottom_M, Bottom_N, Bottom_constannt = ComputerEnergyConstant(Number_bottom_points, Bottom_constraints)  #Energy constants
+    Bottom_M, Bottom_N, Bottom_constannt = ComputerEnergyConstant(Number_bottom_points, Bottom_constraints_energy)  #Energy constants
     Bottom_points = points.copy()
 
     #Read all mesh points from node/ele files  Upper part
@@ -933,8 +1010,8 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
     n = num_particles[None]
     X = x.to_numpy()[:n]
     X_upper = x.to_numpy()[Number_bottom_points:n]
-    Upper_constraints = tria2Energy(Upper_constraints, X_upper)
-    Upper_M, Upper_N, Upper_constannt = ComputerEnergyConstant(Number_upper_points, Upper_constraints)  #Energy constants
+    Upper_constraints_energy = tria2Energy(Upper_constraints, X_upper)
+    Upper_M, Upper_N, Upper_constannt = ComputerEnergyConstant(Number_upper_points, Upper_constraints_energy)  #Energy constants
     new_constraints = tria2constraint(constraints, X)
 
     for triangle_vertices in constraints:
@@ -960,7 +1037,7 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
                         if CheckRepeatMesh(i,j,k,tri_mesh): #True -> add False -> Remove
                             tri_mesh.append([i,j,k])
 
-    connection_matrix = []
+    connection_matrix = [] # mainly used for the visualization purpose
     for i in range(n):
         tmp = []
         for j in range(i + 1, n):
@@ -968,7 +1045,7 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
                 tmp.append(j)
         connection_matrix.append(tmp) #spring connection
     tri_mesh = np.array(tri_mesh)
-    actuation_type_tmp_history = np.ones((max_num_particles,),dtype=float)
+    # actuation_type_tmp_history = np.ones((max_num_particles,),dtype=float)
     # System Setup
     index = 0
     omega = 0.4 #unit:degree
@@ -984,10 +1061,6 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
     width = 0.005 #fixed
     trans_x = 0.15 #initial postion
     trans_y = 0.5 #initial position
-    refresh_EndEffector = 0
-    tmp_trans_x = -1
-    tmp_trans_y = -1
-    tmp_initial_angle = -1
     Motion_switch_on = False
     Motion_Index = -1
     Motion_value = -1
@@ -995,15 +1068,17 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
     Pause = False
     Collision_Enter = False
     Draw_circle = False
+    Circle = None
 
     top_left = np.array([-length / 2, width / 2, 0])
     top_right = np.array([length / 2, width / 2, 0])
     bottom_left = np.array([-length / 2, -width / 2, 0])
     bottom_right = np.array([length / 2, -width / 2, 0])
-    scale_ratio = 0.7
+    scale_ratio = 1  # This parameter is used to make sure the object deformation is always shown with the window
+    # It should be noted that if scale_ratio is not set to be 1, the end_effecter position is not set as expected!
     scale_offset = (1 - scale_ratio) / 2
     rotate_direction = 'counter-clock-wise' #or 'clock-wise'
-    Module = {'EndEffector':0, 'Extension':1 ,'Obstacles':2, 'stiffness':3, 'LidarSwitch':4, 'LidarMaxDistance':5,'FixedPoints':6, 'Motion':7, 'Length': 8, 'FxiedPointsRemove': 9, 'Fixed_circle': 10, 'Store': 11} #Mode
+    Module = {'EndEffector':0, 'Extension':1 ,'Obstacles':2, 'stiffness':3, 'LidarSwitch':4, 'LidarMaxDistance':5,'FixedPoints':6, 'Motion':7, 'Length': 8, 'FixedPointsRemove': 9, 'Fixed_circle': 10, 'Store': 11} #Mode
     filename = ''
     Image_store = False
     Lists_bottom_potential = []
@@ -1012,46 +1087,53 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
     Lists_upper_potential = []
     Lists_upper_momentum = []
     Lists_upper_implicit= []
-    # System Setup
+    # System Setup Finish
+
+    # Simulation starts
     while True:
         for e in gui.get_events(ti.GUI.PRESS):
             if e.key == gui.SPACE and not Motion_switch_on:
                 #paused[None] = not paused[None]
                 Module_index = Set_Module(Module)
+                # Set the end effector position (tip position)
                 if(Module_index == Module['EndEffector']):
                     print("Set End Effector")
-                    if refresh_EndEffector == 0:
-                        tmp_trans_x, tmp_trans_y, tmp_initial_angle, refresh_EndEffector = Set_EndEffector(length)
-                #disable
+                    trans_x, trans_y, initial_angle = Set_EndEffector(length)
+                # Extend Set the end effector position
+                # disable
                 # if(Module_index == Module['Extension']):
                 #     print("Set Extension")
-                #disable
-                #disable
+                # disable
+                # Set the center point of the obstacle
+                # disable
                 # if(Module_index == Module['Obstacles']):
                 #     print("Set center point")
                 #     Set_Center(n)
-                #disable
+                # disable
+                # Set the stiffness
                 if(Module_index == Module['stiffness']):
                     print("Set stiffness")
                     Set_Stiffness()
-                    Bottom_M, Bottom_N, Bottom_constannt = ComputerEnergyConstant(Number_bottom_points, Bottom_constraints)  #Energy constants
-                    Upper_M, Upper_N, Upper_constannt = ComputerEnergyConstant(Number_upper_points, Upper_constraints)  #Energy constants
+                    Bottom_M, Bottom_N, Bottom_constannt = ComputerEnergyConstant(Number_bottom_points, Bottom_constraints_energy)  #Energy constants
+                    Upper_M, Upper_N, Upper_constannt = ComputerEnergyConstant(Number_upper_points, Upper_constraints_energy)  #Energy constants
+                # Launch Lidar beam
                 if(Module_index == Module['LidarSwitch']):
                     print("Lidar Switch on")
-                    Set_lidar(trans_x, trans_y, initial_angle, length, stick_corners, n, connection_matrix, tri_mesh, FixedPointsLists, scale_ratio, scale_offset)
+                    Set_lidar(trans_x, trans_y, initial_angle, length, stick_corners, n, connection_matrix, tri_mesh, FixedPointsLists, scale_ratio, scale_offset, Circle)
+                # Set Lidar Max distance
                 if(Module_index == Module['LidarMaxDistance']):
                     print("Set Lidar max distance")
                     Set_lidarMaxDistance()
-                #disable
-                # if(Module_index == Module['FixedPoints']):
-                #     print("Select Fixed points")
-                #     Set_FixedPoints(stick_corners, n, connection_matrix)
-                #     FixedPointsLists = Set_FixedPoints(stick_corners, n, connection_matrix)
-                #disable
+                # Set the fixed particles (add to the initial list)
+                if(Module_index == Module['FixedPoints']):
+                    print("Select Fixed points")
+                    FixedPointsLists.extend(Set_FixedPoints(stick_corners, n, connection_matrix, FixedPointsLists, Circle))
+                # Set the motion mode
                 if(Module_index == Module['Motion']):
                     print("Motion command:")
-                    print("Tranalation(along orientation):0, Rotation:1, Tranalation(perpendicular to orientation):2")
+                    print("Translation(along orientation):0, Rotation:1, Translation(perpendicular to orientation):2")
                     Motion_Index, Motion_value, Motion_switch_on = Set_Motion() #motion_index: 0 -> Translation 1-> Rotation
+                # Set the length of the cylinder
                 if(Module_index == Module['Length']):
                     print("Set Length")
                     length = float(input("Length:"))
@@ -1059,39 +1141,29 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
                     top_right = np.array([length / 2, width / 2, 0])
                     bottom_left = np.array([-length / 2, -width / 2, 0])
                     bottom_right = np.array([length / 2, -width / 2, 0])
-                    asd
+                # Remove selected fixed particles
+                if(Module_index == Module['FixedPointsRemove']):
+                    print("Remove fixed points")
+                    FixedPointsLists = list(set(FixedPointsLists) - set(Remove_FixedPoints(stick_corners, n, connection_matrix, FixedPointsLists, Circle)))
+                # Set the circle
                 if(Module_index == Module['Fixed_circle']):
-                    Draw_circle = True
-                    Circle = stick_corners[2]
+                    print("Select circle point")
+                    Circle = Set_circle(stick_corners, n, connection_matrix, FixedPointsLists)
                 if(Module_index == Module['Store']):
-                    filename = f'final.png'   # create filename with suffix png
-                    filename = file_dir + filename
                     Store = True
-                #disable
-                # if(Motion_Index == Module['FxiedPointsRemove']):
-                #     print("Remove fixed points")
-                #     FixedPointsLists = []
-                #disable
-            # elif e.key == ti.GUI.LMB:
-            #     print(e.pos[0], e.pos[1])
         collision = -10
-        #if not paused[None]:
-        if refresh_EndEffector == 1:  #Move EndEffector
-            trans_x=tmp_trans_x
-            trans_y=tmp_trans_y
-            initial_angle=tmp_initial_angle
-            refresh_EndEffector=0
         for step in range(1):
-            if not Pause:
+            if not Pause:  # Continue simulation
                 forward(n, number_tri)
-            else:  #compute energy
+            else:  #compute energy (cylinder get inside the tissue)
                 X=x.to_numpy()[:n]
                 while True:
                     paint()
                     gui.set_image(pixels)
-                    filename = f'final.png'   # create filename with suffix png
+                    filename = f'final.png'
                     filename = file_dir + filename
-                        #Rotation collision and translation collision should use different strategies
+                    gui.line(begin=(0.0, bottom_y), end=(1.0, bottom_y), color=0x0, radius=1)
+                    gui.line(begin=(0.0, 1 - bottom_y - 0.001), end=(1.0, 1 - bottom_y - 0.001), color=0x0, radius=1)
                     gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
                     gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
                     gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
@@ -1111,10 +1183,12 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
                             tmp_j = X[j].copy()
                             tmp_j[0] = tmp_j[0] * scale_ratio + scale_offset
                             gui.line(begin=tmp_i, end=tmp_j, radius=2, color=0x445566)
+                    if Draw_circle:
+                        gui.circles(Circle, color=0xffaa77, radius=10)
                     gui.show(filename)
-                    # output_file(file_dir + 'Bottom', Lists_bottom_potential, Lists_bottom_momentum, Lists_bottom_implicit)
-                    # output_file(file_dir + 'Upper', Lists_upper_potential, Lists_upper_momentum, Lists_upper_implicit)
-                    # sys.exit(0)
+                    output_file(file_dir + 'Bottom', Lists_bottom_potential, Lists_bottom_momentum, Lists_bottom_implicit)
+                    output_file(file_dir + 'Upper', Lists_upper_potential, Lists_upper_momentum, Lists_upper_implicit)
+                    sys.exit(0)
             X = x.to_numpy()[:n]
             X_bottom = X[:Number_bottom_points]
             X_upper = X[Number_bottom_points:n]
@@ -1126,12 +1200,9 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
             Rest_bottom = trian_volumn.to_numpy()[:Number_bottom_triangle][:,3] #rest
             Triangle_upper = triangle_area.to_numpy()[Number_bottom_triangle:number_tri] #current
             Rest_upper = trian_volumn.to_numpy()[Number_bottom_triangle:number_tri][:,3] #rest
-            # volumn_sum = 0
-            # for i in range(number_tri):
-            #     volumn_sum += volumn_start[i]
-            # print("Current area is: ", volumn_sum)
             PotentialEnergy_bottom, MomentumEnergy_bottom, ImplitEnergy_bottom = ComputerEnergy('Bottom', Bottom_M, Bottom_N, Bottom_constannt, X_bottom, Triangle_bottom, Rest_bottom, Number_bottom_points, Number_upper_points, n)  #Spring + triangle + gravity
             PotentialEnergy_upper, MomentumEnergy_upper, ImplitEnergy_upper = ComputerEnergy('Upper', Upper_M, Upper_N, Upper_constannt, X_upper, Triangle_upper, Rest_upper, Number_bottom_points, Number_upper_points, n) #Spring + triangle + gravity
+
             if Motion_switch_on: #Store the energy data
                 Lists_bottom_potential.append(PotentialEnergy_bottom)
                 Lists_bottom_momentum.append(MomentumEnergy_bottom)
@@ -1139,9 +1210,8 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
                 Lists_upper_potential.append(PotentialEnergy_upper)
                 Lists_upper_momentum.append(MomentumEnergy_upper)
                 Lists_upper_implicit.append(ImplitEnergy_upper)
-                # print("Bottom energy:", Energy_bottom)
-            # print("Upper energy:", Energy_upper)
-            verts = np.c_[X,np.zeros(n)]#fcl -> 3_D field
+
+            verts = np.c_[X,np.zeros(n)] #fcl used for 3_D field -> add the zero components to -1 axis
             if Motion_switch_on:
                 if Motion_Index == 1:   #Rotation
                     if Motion_value < 0:
@@ -1185,8 +1255,6 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
                             trans_y += speed * np.sin(angle/180*np.pi)
                             if video_save:
                                 if index % interval == 0:
-                                    paint()
-                                    gui.set_image(pixels)
                                     filename = f'frame_{index:05d}.png'   # create filename with suffix png
                                     filename = file_dir + filename
                                     Image_store = True
@@ -1203,8 +1271,6 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
                             trans_y += speed * np.sin((angle-90)/180*np.pi)
                             if video_save:
                                 if index % interval == 0:
-                                    paint()
-                                    gui.set_image(pixels)
                                     filename = f'frame_{index:05d}.png'   # create filename with suffix png
                                     filename = file_dir + filename
                                     Image_store = True
@@ -1222,8 +1288,6 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
                             # trans_y += speed * np.sin(angle+90/180*np.pi) #original version, maybe something wrong
                             if video_save:
                                 if index % interval == 0:
-                                    paint()
-                                    gui.set_image(pixels)
                                     filename = f'frame_{index:05d}.png'   # create filename with suffix png
                                     filename = file_dir + filename
                                     Image_store = True
@@ -1237,11 +1301,12 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
             new_trans_y = trans_y + stick_offset * np.sin(angle/180*np.pi)  #tip of stick
             # newnew_trans_x = trans_x - body_offset * np.cos(angle/180*np.pi)  #The left part of the stick
             # newnew_trans_y = trans_y - body_offset * np.sin(angle/180*np.pi)
-            if Motion_Index == 0: #Tip actuation
+            if Motion_Index == 0: # Assume the collision should happen along the tip point
                 transform_matrix, stick_corners, stick = stick_configuration(angle, trans_x, trans_y, new_trans_x, new_trans_y, length_tip, width, top_left, top_right, bottom_left, bottom_right)
-            else:
+            else: # Assume the collision should happen on the body side
                 transform_matrix, stick_corners, stick = stick_configuration(angle, trans_x, trans_y, trans_x, trans_y, length, width, top_left, top_right, bottom_left, bottom_right)
             # Which side is close to the tissue
+            # This can be computed efficiently based on the distance between the particle and line (not hard)
             # Line_function_A[None] = stick_corners[1][1] - stick_corners[0][1]
             # Line_function_B[None] = stick_corners[0][0] - stick_corners[1][0]
             # Line_function_C[None] = stick_corners[1][0]*stick_corners[0][1] - stick_corners[0][0]*stick_corners[1][1]
@@ -1260,6 +1325,9 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
             # nearest_point_body, collision_body, delta_body = BodyCheckCollison(rotate_direction, verts, tri_mesh, body, angle, tolerance) #argv1 & argv2 -> mesh argv3 -> stick
             # Very useful add: check whether they are on the same side (direction and tissue's collision point)
             # deserve to have a try if time permit
+            # or switch the position of the rectangle.(I think it is better one(two tips, two sides))
+
+            # nearest_point record the the contact particle position on the mesh (id -> particle index)
             nearest_point, collision, delta, nearest_point_id = CheckCollison(rotate_direction, verts, tri_mesh, stick, angle, trans_x, trans_y, tolerance) #argv1 & argv2 -> mesh argv3 -> stick 
             if collision == -1 and Collision_Enter:
                 Pause = True
@@ -1268,6 +1336,8 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
         stick_corners[1][0] = stick_corners[1][0] * scale_ratio + scale_offset
         stick_corners[2][0] = stick_corners[2][0] * scale_ratio + scale_offset
         stick_corners[3][0] = stick_corners[3][0] * scale_ratio + scale_offset
+        paint()
+        gui.set_image(pixels)
         gui.line(begin=stick_corners[0],end=stick_corners[1],color=0x0, radius=1)
         gui.line(begin=stick_corners[1],end=stick_corners[2],color=0x0, radius=1)
         gui.line(begin=stick_corners[2],end=stick_corners[3],color=0x0, radius=1)
@@ -1280,27 +1350,28 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
                 Collision_Enter = True
                 distance_to_point = compute_distance(X[i:i+1][0], nearest_point)
                 # if X[i:i+1][0][0] == nearest_point[0] and X[i:i+1][0][1] == nearest_point[1]: #control point
-                region_raduis = 0.25
-                distance_scale = (region_raduis - distance_to_point) / region_raduis
+                region_radius = 0.25
+                distance_scale = (region_radius - distance_to_point) / region_radius
                 Check = False
+                # Based on the region_radius, the particle on the other tissue may also be affected
                 if nearest_point_id < Number_bottom_points: #bottom tissue
                     if i < Number_bottom_points:
                         Check = True
                 else: #upper tissue
                     if i >= Number_bottom_points:
                         Check = True
-                if distance_scale >= 0 and Check: #control point  0.6 0.45   based on the location of the actuated tissue
+                if distance_scale >= 0 and Check: # The particle i is within the radius -> compute the position delta
                     actuation_type_tmp[i] = 2
-                    actuation_type_tmp_history[i] = 2
-                    #direction is computed in two different ways:rotation or translation
+                    # actuation_type_tmp_history[i] = 2
+                    # The position delta can be considered as: 1). compute the direction, 2). compute the distance
+                    #direction is computed in three different ways:rotation or translation
                     if Motion_Index == 1: #rotation
                         direction = compute_Rotationdirection(rotate_direction, transform_matrix, length, width, nearest_point)
                     elif Motion_Index == 0: #translation(along the orientation)
                         direction = compute_Translationdirection(angle, Motion_value)
                     elif Motion_Index == 2: #translation(perpendicular to the orientation)
                         direction = compute_PerpendicularDirection(angle, Motion_value)
-                    # print("Dircettion:", direction)
-                    #print("Distance:", delta) #move distance
+                    # Compute the position change for each particle caused by the cylinder motion
                     delta_x = scale * distance_scale * delta * direction[0] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
                     delta_y = scale * distance_scale * delta * direction[1] / np.sqrt(direction[0] ** 2 + direction[1] ** 2)
                     Delta_x_se[i] = delta_x
@@ -1312,7 +1383,7 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
             if i in FixedPointsLists:
                 actuation_type_tmp[i] = -1
         actuation_type.from_numpy(actuation_type_tmp)
-        Delta_x_sequence.from_numpy(Delta_x_se)
+        Delta_x_sequence.from_numpy(Delta_x_se)  #
         Delta_y_sequence.from_numpy(Delta_y_se)
         gui.line(begin=(0.0, bottom_y), end=(1.0, bottom_y), color=0x0, radius=1)
         gui.line(begin=(0.0, 1-bottom_y-0.001), end=(1.0, 1-bottom_y-0.001), color=0x0, radius=1)
@@ -1331,15 +1402,13 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
                 tmp_j = X[j].copy()
                 tmp_j[0] = tmp_j[0] * scale_ratio + scale_offset
                 gui.line(begin=tmp_i, end=tmp_j, radius=2, color=0x445566)
-        if Draw_circle:
-            tmp = X[0:1].copy()
-            tmp[0][0] = Circle[0]
-            tmp[0][1] = Circle[1]
-            gui.circles(tmp, color=0xffaa77, radius=10)
-        # gui.text(content=f'C: clear all; Space: pause', pos=(0, 0.95), color=0x0)
+        if Circle is not None:
+            gui.circles(Circle, color=0xffaa77, radius=10)
         if Motion_switch_on and Image_store:
             gui.show(filename)
         if Store:
+            filename = f'final.png'  # create filename with suffix png
+            filename = file_dir + filename
             gui.show(filename)
             output_file(file_dir + 'Bottom', Lists_bottom_potential, Lists_bottom_momentum, Lists_bottom_implicit)
             output_file(file_dir + 'Upper', Lists_upper_potential, Lists_upper_momentum, Lists_upper_implicit)
@@ -1351,6 +1420,8 @@ if __name__ == '__main__':
     Bottom_dir = sys.argv[1]
     Upper_dir = sys.argv[2]
     file_dir = sys.argv[3]
+    if file_dir[-1] != '/':
+        file_dir += '/'
     interval = int(sys.argv[4])
     if sys.argv[5] == "True":
         video_save = True
