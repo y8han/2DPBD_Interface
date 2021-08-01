@@ -975,7 +975,9 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
 
     n = num_particles[None]
     X = x.to_numpy()[:n]
-    Bottom_constraints_energy = tria2Energy(constraints, X)
+    # Input: raw triangles
+    # Output: Constraint & rest length
+    Bottom_constraints_energy = tria2Energy(constraints, X)  # normal constraint (should be used for changing stiffness)
     Number_bottom_points = len(points)
     Number_bottom_triangle = len(constraints)
     Bottom_M, Bottom_N, Bottom_constannt = ComputerEnergyConstant(Number_bottom_points, Bottom_constraints_energy)  #Energy constants
@@ -1010,18 +1012,20 @@ def main(Bottom_dir, Upper_dir, file_dir, interval, video_save):
     n = num_particles[None]
     X = x.to_numpy()[:n]
     X_upper = x.to_numpy()[Number_bottom_points:n]
-    Upper_constraints_energy = tria2Energy(Upper_constraints, X_upper)
+    Upper_constraints_energy = tria2Energy(Upper_constraints, X_upper)  # normal constraint
     Upper_M, Upper_N, Upper_constannt = ComputerEnergyConstant(Number_upper_points, Upper_constraints_energy)  #Energy constants
+    # Input: raw triangles
+    # Output: Constraint & rest length, that is needed to be used in simulation
     new_constraints = tria2constraint(constraints, X)
 
     for triangle_vertices in constraints:
         new_trian(triangle_vertices[0], triangle_vertices[1], triangle_vertices[2])
     number_tri = num_trian[None]
-    volumn_start = trian_volumn.to_numpy()[:number_tri]
-    volumn_sum = 0
+    volume_start = trian_volumn.to_numpy()[:number_tri]
+    volume_sum = 0
     for i in range(number_tri):
-        volumn_sum += volumn_start[i, 3] #rest_area
-    print("Initial area is: ", volumn_sum)
+        volume_sum += volume_start[i, 3] #rest_area
+    print("Initial area is: ", volume_sum)
 
     tri_matrix = np.zeros((n,n))
     for i in new_constraints:
